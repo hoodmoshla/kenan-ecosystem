@@ -1,0 +1,11 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<title>Kenan Admin — لوحة مراقبة</title>
+<style>body{font-family:system-ui,sans-serif;background:#0b2a3a;color:#f8f3e7;max-width:800px;margin:auto;padding:16px}
+.card{background:#12394d;border-radius:12px;padding:16px;margin:12px 0}</style></head><body>
+<h1>Kenan Admin</h1>
+<p>لوحة مراقبة فقط: لا تستطيع إنشاء أرصدة على الشبكة ولا تعديلها. تتطلب رأس <code>X-Admin-Token</code> المطابق لمتغير البيئة <code>KENAN_ADMIN_TOKEN</code> في الخادم؛ بدون تعيينه تكون اللوحة معطّلة (503).</p>
+<div class="card"><label>رمز الإدارة: <input id="tok" type="password"></label>
+<button onclick="load()">عرض الحالة</button><pre id="out"></pre></div>
+<script>async function load(){const t=document.getElementById('tok').value;
+const r=await fetch('http://127.0.0.1:8000/admin/status',{headers:{'X-Admin-Token':t}});
+document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2);}</script></body></html>
