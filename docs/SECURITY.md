@@ -1,22 +1,16 @@
-# Threat model & key management (summary)
+# نموذج التهديد وإدارة المفاتيح — نسخة التطوير
 
-- Keys: user-held only. Wallet signs locally (Python reference + Rust
-  core + Android Keystore design). No server, log, crash report or
-  AI-assistant request ever receives a seed phrase or private key.
-  The Intelligence module refuses payloads containing key fields.
-- Storage: Android release build must use AndroidKeyStore AES/GCM for
-  the seed, never plaintext SharedPreferences/SQLite/files. Biometrics
-  unlock the local key; they are NOT a backup — backup completeness is
-  proven by re-deriving the address from the phrase (tested).
-- Transactions: Shield shows blocked/warning/ok/not_checked — never
-  "safe" without data. Simulation is not a guarantee. High fees and
-  untrusted recipients warn before signing; signing needs explicit user
-  confirmation showing recipient, network, amount and fee.
-- Backend: admin endpoints disabled unless KENAN_ADMIN_TOKEN is set and
-  matched; demo exchange balances are isolated from chain balances;
-  audit events append to data/audit.log.
-- Supply: the admin UI cannot mint chain balances or edit chain state.
-  Only chain rules (genesis/faucet/fees on devnet) change supply, and
-  the faucet exists ONLY on devnet.
-- What is NOT yet audited: everything. No independent audit has been
-  performed; do not launch publicly on the basis of this snapshot.
+هذا المستودع نموذج تجريبي؛ لا توجد مراجعة أمنية مستقلة ولا ينبغي التعامل معه كبنية مالية إنتاجية.
+
+## ما ينفذه الكود حاليًا
+
+- `wallet-core/` ينشئ عبارات BIP39 ويوقّع Ed25519 داخل العملية المحلية. هذا مرجع Python للاختبار، وليس تخزينًا آمنًا لمحفظة Android.
+- مساعد Intelligence الحالي محلي وقائم على قواعد بسيطة، ولا يستدعي مزودًا خارجيًا. يرفض الحقول المعروفة لمواد المفاتيح في المستوى الأعلى من السياق، لكن لا ترسل له أسرارًا.
+- عقدة Python تقبل تحويلات موقعة وتتحقق من nonce والرسوم والعنوان. تنشئ كتلًا مرتبطة بتجزئة الرأس؛ هذا لا يوفر إجماعًا موزعًا ولا يثبت الحالة أمام مهاجم.
+- ملف JSON يحفظ الأرصدة والـnonces كمجموعات حالة منفصلة عن السجل. عند التحميل يُفحص ارتباط الكتل وتجزئة رؤوسها، لكن لا يُعاد اشتقاق رصيد كل حساب من سجل كامل، وبعض حركات faucet لا تُسجل كتحويلات عادية. لذلك يمكن العبث بلقطة الرصيد دون أن يكون ذلك مكافئًا لاختراق شبكة بلوكشين حقيقية؛ لا تستخدم هذه الملفات كدفتر موثوق ولا تقبل ملفات حالة من مصدر غير موثوق.
+- محرك التداول DEMO مخزّن في الذاكرة فقط، ولا يُسوّي أوامر على السلسلة. سجل التدقيق append-only محلي، وليس سجلًا غير قابل للتغيير.
+- الواجهة الإدارية تعرض نقطة مراقبة واحدة، ويعطّل الخادم هذه النقطة إذا لم يُضبط `KENAN_ADMIN_TOKEN`. لا تعرض العقدة أو faucet للعامة؛ faucet غير موثق للمستخدمين وغير مصمم لشبكة عامة.
+
+## ما لم يُنفذ بعد
+
+إنشاء/استعادة محفظة Android والتخزين في Android Keystore غير موجودين بعد. لا توجد شبكة Polkadot SDK، أو Mainnet، أو أموال حقيقية، أو تدقيق مستقل، أو جسر فعّال. قبل أي إطلاق، يلزم تصميم دفتر حالة قابل لإعادة التشغيل والتحقق، صلاحيات تشغيل ومصادقة حقيقية، اختبارات اختراق ومراجعة مستقلة، ومراجعة قانونية وتشغيلية. راجع `docs/STATUS.md` و`docs/OPERATIONS.md`.

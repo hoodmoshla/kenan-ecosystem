@@ -88,6 +88,8 @@ class TestChain(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], 1, BASE_FEE, 0))
         with self.assertRaises(ValueError):
+            self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], 1, BASE_FEE + 1, 1))
+        with self.assertRaises(ValueError):
             self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], 10 ** 12 * UNIT, BASE_FEE, 1))
 
     def test_security_validation(self):
@@ -101,6 +103,8 @@ class TestChain(unittest.TestCase):
         # malformed input must fail cleanly, never raise KeyError
         self.assertIsNotNone(self.chain.validate({"to": self.bob["address"]}))
         self.assertIsNotNone(self.chain.validate("not-a-dict"))
+        malformed_from = dict(tx, **{"from": ["not", "an", "address"]})
+        self.assertIsNotNone(self.chain.validate(malformed_from))
         # bad recipient + oversized memo rejected
         bad = wallet.sign_transfer(self.alice, "kenan1short", 1, BASE_FEE, 0)
         self.assertIsNotNone(self.chain.validate(bad))
@@ -148,6 +152,42 @@ class TestExchange(unittest.TestCase):
         self.assertEqual(e.balances["seller"]["KEN"]["free"], 5)
         self.assertEqual(e.balances["seller"]["KEN"]["reserved"], 0)
 
+    def test_invalid_order_fields_and_demo_deposit_rejected(self):
+        e = Engine()
+        e.deposit_demo("seller", "KEN", 5)
+        with self.assertRaises(ValueError):
+            e.deposit_demo("seller", "KEN", -1)
+        with self.assertRaises(ValueError):
+            e.place("seller", "sideways", "KEN/USD-DEMO", "limit", 1, 1.0)
+        with self.assertRaises(ValueError):
+            e.place("seller", "sell", "KEN/USD-DEMO", "stop", 1, 1.0)
+        with self.assertRaises(ValueError):
+            e.place("seller", "sell", "KEN/USD-DEMO", "limit", float("nan"), 1.0)
+        self.assertEqual(e.orders, [])
+        self.assertEqual(e.balances["seller"]["KEN"]["free"], 5)
+
+    def test_limit_buy_price_improvement_releases_surplus(self):
+        e = Engine()
+        e.deposit_demo("seller", "KEN", 5)
+        e.deposit_demo("buyer", "USD-DEMO", 100)
+        e.place("seller", "sell", "KEN/USD-DEMO", "limit", 5, 10.0)
+        order = e.place("buyer", "buy", "KEN/USD-DEMO", "limit", 4, 12.0)
+        self.assertEqual(order.status, "filled")
+        self.assertEqual(e.balances["buyer"]["KEN"]["free"], 4)
+        self.assertEqual(e.balances["buyer"]["USD-DEMO"]["free"], 60)
+        self.assertEqual(e.balances["buyer"]["USD-DEMO"]["reserved"], 0)
+
+    def test_partial_limit_buy_cancel_returns_all_remaining_reserve(self):
+        e = Engine()
+        e.deposit_demo("seller", "KEN", 2)
+        e.deposit_demo("buyer", "USD-DEMO", 100)
+        e.place("seller", "sell", "KEN/USD-DEMO", "limit", 2, 10.0)
+        order = e.place("buyer", "buy", "KEN/USD-DEMO", "limit", 4, 12.0)
+        self.assertEqual(order.status, "open")
+        e.cancel(order.id, "buyer")
+        self.assertEqual(e.balances["buyer"]["USD-DEMO"]["free"], 80)
+        self.assertEqual(e.balances["buyer"]["USD-DEMO"]["reserved"], 0)
+
 
 class TestModules(unittest.TestCase):
     def test_shield_never_claims_safe_without_data(self):
@@ -178,8 +218,9 @@ class TestModules(unittest.TestCase):
         self.assertTrue(inv["pay_payload"].startswith("kenan://pay"))
         with self.assertRaises(ValueError):
             receipt_for(inv["invoice_id"], "")
-        self.assertEqual(receipt_for(inv["invoice_id"], "ab" * 32)["status"],
-                         "paid-pending-chain-confirmation")
+        receipt = receipt_for(inv["invoice_id"], "ab" * 32)
+        self.assertEqual(receipt["status"], "pending-verification")
+        self.assertFalse(receipt["verified"])
 
     def test_academy_insights_governance_bridge(self):
         self.assertEqual(academy_account("u")["account_type"], "VIRTUAL-DEMO")

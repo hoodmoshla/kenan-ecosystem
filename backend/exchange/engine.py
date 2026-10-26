@@ -1,9 +1,10 @@
 """Kenan Exchange — matching engine (DEMO balances only).
 
-Separation rule: demo exchange balances live ONLY in the backend SQLite
-database and are labelled DEMO in every response. They are never chain
-balances and never real money. Settlement to the chain is NOT performed
-by this engine; that step is listed as pending in docs/STATUS.md.
+Separation rule: demo exchange balances live ONLY in this in-memory backend
+engine and are labelled DEMO in every response. They are never chain balances
+and never real money. Balances/orders disappear when the process restarts.
+Settlement to the chain is NOT performed by this engine; that step is listed
+as pending in docs/STATUS.md.
 
 Rules: price-time priority, limit + market orders, partial fills, reserved
 balances (locked on order placement, released on fill/cancel), fee = 0.1%
@@ -13,6 +14,8 @@ reported as filled unless a trade record was created by match().
 from __future__ import annotations
 
 import itertools
+import math
+import threading
 from dataclasses import dataclass, field
 
 FEE_RATE = 0.001  # 0.1% demo fee
@@ -41,28 +44,61 @@ class Engine:
     orders: list = field(default_factory=list)
     trades: list = field(default_factory=list)
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def _bal(self, user, asset):
         return self.balances.setdefault(user, {}).setdefault(asset, {"free": 0.0, "reserved": 0.0})
 
     def deposit_demo(self, user, asset, amount):
-        b = self._bal(user, asset)
-        b["free"] = round(b["free"] + amount, 10)
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            raise ValueError("demo deposit must be a finite positive amount")
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError("demo deposit must be a finite positive amount")
+        with self._lock:
+            b = self._bal(user, asset)
+            b["free"] = round(b["free"] + amount, 10)
 
     def book(self, pair):
-        buys = sorted([o for o in self.orders if o.pair == pair and o.side == "buy" and o.status == "open"],
-                      key=lambda o: (-(o.price or 0), o.id))
-        sells = sorted([o for o in self.orders if o.pair == pair and o.side == "sell" and o.status == "open"],
-                       key=lambda o: ((o.price or 0), o.id))
-        return {"pair": pair, "bids": [{"id": o.id, "price": o.price, "qty": o.remaining} for o in buys],
-                "asks": [{"id": o.id, "price": o.price, "qty": o.remaining} for o in sells],
-                "demo_only": True}
+        with self._lock:
+            buys = sorted([o for o in self.orders if o.pair == pair and o.side == "buy" and o.status == "open"],
+                          key=lambda o: (-(o.price or 0), o.id))
+            sells = sorted([o for o in self.orders if o.pair == pair and o.side == "sell" and o.status == "open"],
+                           key=lambda o: ((o.price or 0), o.id))
+            return {"pair": pair, "bids": [{"id": o.id, "price": o.price, "qty": o.remaining} for o in buys],
+                    "asks": [{"id": o.id, "price": o.price, "qty": o.remaining} for o in sells],
+                    "demo_only": True}
 
     def place(self, user, side, pair, kind, qty, price=None):
-        if qty <= 0:
+        try:
+            qty = float(qty)
+        except (TypeError, ValueError):
+            raise ValueError("quantity must be a finite positive number")
+        if not math.isfinite(qty) or qty <= 0:
             raise ValueError("quantity must be positive")
-        if kind == "limit" and (price is None or price <= 0):
+        if side not in ("buy", "sell"):
+            raise ValueError("side must be buy or sell")
+        if kind not in ("limit", "market"):
+            raise ValueError("kind must be limit or market")
+        if not isinstance(pair, str) or pair.count("/") != 1:
+            raise ValueError("pair must be BASE/QUOTE")
+        base, quote = pair.split("/")
+        if not base or not quote or base == quote:
+            raise ValueError("pair must contain two different assets")
+        if price is not None:
+            try:
+                price = float(price)
+            except (TypeError, ValueError):
+                raise ValueError("price must be finite and positive")
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError("price must be finite and positive")
+        if kind == "limit" and price is None:
             raise ValueError("limit order needs a positive price")
+        with self._lock:
+            return self._place(user, side, pair, kind, qty, price)
+
+    def _place(self, user, side, pair, kind, qty, price):
         base, quote = pair.split("/")
         if side == "buy" and kind == "limit":
             need = qty * price
@@ -108,7 +144,9 @@ class Engine:
                 tb, mb = self._bal(taker.user, quote), self._bal(maker.user, base)
                 # taker reserved only for limit buys; market buys check at fill
                 if taker.kind == "limit":
-                    tb["reserved"] = round(tb["reserved"] - cost, 10)
+                    reserved_for_fill = round(qty * taker.price, 10)
+                    tb["reserved"] = round(tb["reserved"] - reserved_for_fill, 10)
+                    tb["free"] = round(tb["free"] + reserved_for_fill - cost, 10)
                 else:
                     if tb["free"] < cost:
                         continue
@@ -142,6 +180,10 @@ class Engine:
         # limit remainder stays open with its reservation intact
 
     def cancel(self, order_id, user):
+        with self._lock:
+            return self._cancel(order_id, user)
+
+    def _cancel(self, order_id, user):
         for o in self.orders:
             if o.id == order_id and o.user == user and o.status == "open":
                 base, quote = o.pair.split("/")

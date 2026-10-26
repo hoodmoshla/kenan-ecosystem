@@ -15,8 +15,9 @@ and what is still pending — do not present demo balances as real.
   Recovery (proposal machine, no key custody), Academy, Insights, Shield,
   Governance (signalling), Intelligence (rule-based, no keys), Bridge (disabled).
 - `explorer/` + node `/explorer` — block/tx/account/supply viewer from live RPC.
-- `android-app/` — Kotlin/Compose RTL wallet source (not compiled here).
-- `tests/` — 13 automated tests covering chain, wallet, exchange, modules, HTTP.
+- `android-app/` — Kotlin/Compose RTL wallet source; debug APK builds, but
+  wallet creation/signing and device testing are not complete.
+- `tests/` — 17 automated tests covering chain, wallet, exchange, modules, HTTP.
 
 ## Quick start
 ```bash

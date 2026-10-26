@@ -15,3 +15,5 @@
   /pay/invoice, /pay/receipt, /circles, /circles/<id>/request,
   /academy/account, /insights, /governance/propose, /bridge/transfer (503, disabled)
 - GET /admin/status — header X-Admin-Token = $KENAN_ADMIN_TOKEN, else 503/403
+
+`POST /pay/receipt` records a caller-provided transaction-hash claim and returns `pending-verification`; it does not query or verify that transaction against the node.

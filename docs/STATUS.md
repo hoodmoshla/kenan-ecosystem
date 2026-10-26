@@ -1,46 +1,31 @@
-# Kenan Ecosystem — Status: what is verified vs. what is pending
+# Kenan Ecosystem — verified status (2026-10-26)
 
-Last verified in this environment: Python 3.12, Node 24, Rust 1.99.1 (installed
-during this build). No Java / Android SDK in this VM.
+This status describes only the GitHub repository snapshot and work verified in this session. No separate pre-existing local project copy was available to inspect.
 
-## ✅ Verified by automated tests (13/13 passing, `python3 -m unittest discover -s tests`)
-- Devnet chain: Ed25519-signed transfers, nonce + replay protection, flat
-  fee (0.001 KEN, 50% burned / 50% fee-collector), hash-chained blocks,
-  persistent state, balance/tx lookup over HTTP RPC.
-- Wallet: 24-word BIP39 creation, restore, backup-proof check, sign/verify,
-  tamper detection. Keys never leave the signing process.
-- Exchange (DEMO): limit matching, partial fills, reserved balances,
-  cancel releasing reservations, insufficient-balance rejection.
-- Modules: Shield levels, Intelligence key-refusal + unsigned drafts,
-  Circles caps/thresholds, Pay receipts requiring a tx hash, Academy
-  virtual accounts, Insights PnL-unavailable without a price source,
-  Governance signalling (non-binding), Recovery timelock, Bridge DISABLED.
-- HTTP integration: node RPC transfer end-to-end + backend live-balance proxy.
+## Verified in this session
 
-## ✅ Also verified in this environment
-- Rust core (`rust-core/`): `cargo test --release` 2/2 passing
-  (Ed25519 sign/verify roundtrip + tamper rejection, fee rule), Rust
-  1.99.1, crates ed25519-dalek 2.2.0 / sha2 / hex. Cross-check verified:
-  a Rust signature for a fixed test seed verifies in Python
-  (`rust-core/examples/interop.rs`) and the derived address matches.
+- **Python:** `python3 -m unittest discover -s tests -v` — 17 tests passed. Coverage includes BIP39 wallet creation/restore/signing, devnet transfers/nonces/fees, HTTP integration, demo exchange behavior, and prototype modules. The tests use generated test keys and temporary chain state.
+- **Rust:** `cargo test --locked` in `rust-core/` — 2 unit tests passed; 0 doc-tests. This is a small signing/address library, not a blockchain node.
+- **Android:** `./gradlew --no-daemon :app:assembleDebug` — BUILD SUCCESSFUL with Gradle 8.9, JDK 21, and the installed Android SDK. The debug APK was verified with `apksigner` and `aapt`; it was not installed on a device because no emulator or device was connected. This is a debug build signed with the standard debug certificate, not a release build.
+- **CI:** `.github/workflows/ci.yml` now defines Python tests, Rust tests, and an Android debug build/artifact. It has not yet run on GitHub, so no remote CI result is claimed.
 
-## 🟡 Built, not yet compiled in this environment
-- Android app (`android-app/`): Kotlin/Compose RTL source, navigation,
-  loading/error/empty states, live-balance client. NOT compiled — no
-  Android SDK/Java here, so NO APK is claimed or delivered. Building an
-  APK requires Android Studio / SDK + JDK 17 (see docs/ANDROID.md).
+## What the code currently provides
 
-## ❌ Explicitly NOT done / NOT claimed
-- Polkadot SDK / Substrate node: NOT built. A full Substrate node needs
-  far more RAM/disk/time than this 2-CPU VM offers; the Python devnet is
-  the testable stand-in, with the same sign/balance/submit boundaries.
-- Mainnet, real money, public KEN listing, real trading, custody of user
-  funds: NONE. Everything here is devnet/demo and labelled as such.
-- LLM provider for Intelligence: not connected; rule-based explainer only.
-- Bridge: code refuses all transfers until an independent audit exists.
-- Protocol-level governance, on-chain DEX, recurring payments: design /
-  signalling only.
-- External services still needed before any public launch: see
-  docs/OPERATIONS.md (PostgreSQL, Redis if justified, secrets manager,
-  price feed with source+timestamp, independent security audit, legal /
-  licensing review, Substrate runtime + testnet validators).
+- `blockchain/`: a local Python devnet with Ed25519-signed transfers, sequential nonces, a fixed 0.001 KEN fee, half-fee burn, hash-linked block headers, JSON persistence, and HTTP RPC. This is a test implementation, not consensus-secure infrastructure. The balance/nonce snapshot in the JSON file is not independently rebuilt from a complete ledger; do not trust edited or externally supplied state files.
+- `wallet-core/`: a Python BIP39 reference wallet supporting 24-word phrase creation, restore, backup proof, and local Ed25519 signing. It does not implement the Android user's wallet storage.
+- `rust-core/`: signing/address-derivation primitives with two unit tests. There is no Polkadot SDK/Substrate node here.
+- `backend/`: HTTP APIs and a demo matching engine. Exchange balances and orders are in memory and disappear when the process restarts; trades are not settled to the chain. The engine remains DEMO-only.
+- `android-app/`: a Kotlin/Compose RTL shell. It can read account/chain information through the Python node client when run in a suitable development environment. Wallet creation/recovery, Android Keystore storage, transaction signing/submission from the UI, QR receive, real exchange flows, and device-level testing remain incomplete.
+- `explorer/` and the node `/explorer` page: read-only views backed by the Python devnet RPC. They do not support a Polkadot chain.
+- `admin/`: a monitoring page for a single token-gated backend status endpoint, not a complete administration console.
+- `backend/modules/features.py`: early/demo modules. Intelligence is rule-based; Governance is off-chain signalling; Recovery is a proposal state machine; Pay does not yet verify the transaction against the node; Insights accepts caller-supplied holdings; Bridge is deliberately disabled.
+
+## Not implemented / release blockers
+
+- Polkadot SDK/Substrate runtime, node, validators, consensus, and network migration.
+- Mainnet, public KEN issuance/listing, real-money trading, custody, and audited bridge.
+- Production wallet creation/recovery and Android Keystore integration.
+- Persistent and auditable exchange backend, verified on-chain payment receipts, real price feed, and external LLM provider.
+- Independent security review, penetration testing, legal/licensing review, production operations, backups/restore drills, and release signing key verified against a known project certificate.
+
+All balances and transactions in this Python chain are devnet test data. Do not expose the faucet or node to an untrusted/public network and do not present this project as production financial infrastructure.

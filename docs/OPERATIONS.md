@@ -11,7 +11,7 @@ python3 -m unittest discover -s tests -v
 
 Production gaps (all blocking for public launch):
 - Substrate/Polkadot SDK node + testnet validators + runtime upgrade plan.
-- PostgreSQL (replacing in-memory/SQLite demo stores), Redis only if a
+- PostgreSQL (replacing the in-memory demo store), Redis only if a
   measured need appears, secrets manager, backups + tested restore.
 - Price feed with source + timestamp, or keep PnL disabled.
 - LLM provider (optional, privacy-reviewed) or keep rule-based assistant.

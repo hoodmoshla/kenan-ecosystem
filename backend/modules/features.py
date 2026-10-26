@@ -5,14 +5,14 @@ Shield: returns check levels, never "safe" without data.
 Intelligence: rule-based Arabic explainer. No LLM call, no keys. It rejects
   any payload containing private-key/seed fields.
 Circles: payment requests + threshold approvals + per-member spending caps.
-Pay: merchant invoices with a shareable payload; a receipt is only valid
-  when it carries a chain tx hash verified against the node.
+Pay: merchant invoices with a shareable payload; receipt hashes are recorded
+  as unverified claims and remain pending until a node-verification flow exists.
 Recovery: guardian-threshold proposal with a timelock. This is a DESIGN +
   proposal state machine only: it never holds or reconstructs anyone's key,
   and it cannot bypass a wallet's own backup.
 Academy: VIRTUAL demo accounts, labelled on every record.
-Insights: holdings distribution + fees from real chain history. Price/PnL
-  are UNAVAILABLE unless a price provider with source+timestamp is supplied.
+Insights: caller-supplied holdings distribution + fee totals. Price/PnL are
+  UNAVAILABLE unless a price provider with source+timestamp is supplied.
 Governance: off-chain signalling votes weighted by chain balance snapshot.
   Protocol-level governance requires the Substrate runtime (pending).
 Bridge: DISABLED by design — bridge_transfer() always refuses until an
@@ -129,9 +129,10 @@ def create_invoice(merchant, amount_ken, note=""):
 
 def receipt_for(invoice_id, tx_hash):
     if not tx_hash:
-        raise ValueError("a receipt requires a verified chain transaction hash")
-    return {"invoice_id": invoice_id, "tx_hash": tx_hash, "status": "paid-pending-chain-confirmation",
-            "note": "confirm the hash in Kenan Explorer before treating payment as final"}
+        raise ValueError("a receipt requires a transaction hash claim")
+    return {"invoice_id": invoice_id, "tx_hash": tx_hash, "status": "pending-verification",
+            "verified": False,
+            "note": "hash not checked against the node; confirm in Kenan Explorer before treating payment as final"}
 
 
 # ---------- Recovery (proposal state machine, no key custody) ----------
@@ -165,7 +166,7 @@ def insights(holdings: dict, fees_base: int, price_provider=None):
     total = sum(holdings.values())
     dist = {k: (round(v / total * 100, 2) if total else 0) for k, v in holdings.items()}
     out = {"holdings": holdings, "distribution_pct": dist, "fees_base": fees_base,
-           "source": "chain transaction history", "timestamp": int(time.time())}
+           "source": "caller-provided demo data (not independently verified)", "timestamp": int(time.time())}
     if price_provider is None:
         out["pnl"] = None
         out["pnl_note"] = "unavailable: no price source configured (source+timestamp required)"

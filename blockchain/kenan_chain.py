@@ -125,7 +125,8 @@ class Chain:
     def _load(self):
         with open(self.path, encoding="utf-8") as f:
             data = json.load(f)
-        # Linkage + hash check: a tampered state file must not load silently.
+        # Check block linkage and header hashes only. Account-state snapshots
+        # are not rebuilt from a complete ledger; this remains devnet-only.
         prev_hash = "0" * 64
         for i, b in enumerate(data["blocks"]):
             if b["height"] != i or b["prev_hash"] != prev_hash:
@@ -183,18 +184,22 @@ class Chain:
         if not isinstance(tx, dict):
             return "malformed transaction"
         for field in ("from", "to", "pubkey", "signature"):
-            if not tx.get(field):
+            if not isinstance(tx.get(field), str) or not tx.get(field):
                 return f"missing field: {field}"
-        try:
-            amount, fee, nonce = int(tx["amount"]), int(tx["fee"]), int(tx["nonce"])
-        except (KeyError, ValueError, TypeError):
+        if any(type(tx.get(field)) is not int for field in ("amount", "fee", "nonce")):
             return "malformed amount/fee/nonce"
-        if len(str(tx.get("memo", ""))) > 256:
+        amount, fee, nonce = tx["amount"], tx["fee"], tx["nonce"]
+        memo = tx.get("memo", "")
+        if not isinstance(memo, str):
+            return "memo must be a string"
+        if len(memo) > 256:
             return "memo too long (max 256 chars)"
         if amount <= 0:
             return "amount must be positive"
-        if fee < BASE_FEE:
-            return f"fee below minimum {BASE_FEE} base units"
+        if fee != BASE_FEE:
+            return f"fee must equal fixed devnet fee {BASE_FEE} base units"
+        if not is_valid_address(tx["from"]):
+            return "invalid sender address"
         if tx.get("to", "") == tx.get("from", ""):
             return "sender and recipient must differ"
         if not is_valid_address(str(tx.get("to", ""))):

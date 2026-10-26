@@ -1,4 +1,4 @@
-plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.compose") }
+plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.kenan.wallet"; compileSdk = 34
     defaultConfig { applicationId = "com.kenan.wallet"; minSdk = 26; targetSdk = 34; versionCode = 1; versionName = "0.1.0-devnet" }
