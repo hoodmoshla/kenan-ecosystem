@@ -9,6 +9,8 @@ cd android-app
 
 ينتج الملف `app/build/outputs/apk/debug/app-debug.apk`. هذه نسخة تطوير موقعة بشهادة Android debug القياسية، وليست APK إصدار نهائي. لا تستخدم شهادة debug كتوقيع إصدار أو كأساس لتحديثات مستقبلية. لم يُثبّت الملف على هاتف أو محاكي في هذه الجلسة لعدم وجود جهاز متصل.
 
+إعداد Gradle يبقي Kotlin على `1.9.24` ويستخدم Compose Compiler `1.5.14` وفق [خريطة التوافق الرسمية من Android](https://developer.android.com/jetpack/androidx/releases/compose-kotlin). إضافة Compose Compiler Gradle الجديدة مخصصة لـKotlin `2.0+`؛ لذلك لا تُطبق على إعداد Kotlin الحالي.
+
 ## اتصال الشبكة التجريبية
 
 شغّل العقدة على المضيف:

@@ -7,7 +7,7 @@ This status describes only the GitHub repository snapshot and work verified in t
 - **Python:** `python3 -m unittest discover -s tests -v` — 17 tests passed. Coverage includes BIP39 wallet creation/restore/signing, devnet transfers/nonces/fees, HTTP integration, demo exchange behavior, and prototype modules. The tests use generated test keys and temporary chain state.
 - **Rust:** `cargo test --locked` in `rust-core/` — 2 unit tests passed; 0 doc-tests. This is a small signing/address library, not a blockchain node.
 - **Android:** `./gradlew --no-daemon :app:assembleDebug` — BUILD SUCCESSFUL with Gradle 8.9, JDK 21, and the installed Android SDK. The debug APK was verified with `apksigner` and `aapt`; it was not installed on a device because no emulator or device was connected. This is a debug build signed with the standard debug certificate, not a release build.
-- **CI:** `.github/workflows/ci.yml` now defines Python tests, Rust tests, and an Android debug build/artifact. It has not yet run on GitHub, so no remote CI result is claimed.
+- **CI:** GitHub Actions run [40388581691](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40388581691) completed successfully on the repair branch: Python tests, Rust tests, and Android debug APK build all passed. The initial run failed before Gradle because the old Android setup action requested a removed SDK package; setup was updated and the follow-up run passed.
 
 ## What the code currently provides
 

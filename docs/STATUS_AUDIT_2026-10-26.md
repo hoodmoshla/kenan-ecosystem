@@ -21,7 +21,7 @@
 | لوحة الإدارة | **واجهة مراقبة محدودة** | `admin/index.html` و`GET /admin/status`; تتطلب `KENAN_ADMIN_TOKEN`، وتُعطّل عند غيابه. | ليست لوحة إدارة متكاملة ولا تدير الحوكمة أو الأرصدة أو المخاطر؛ لا ينبغي إضافة تحكم مالي دون تفويض وتدقيق. |
 | ميزات Pay وCircles وRecovery وAcademy وInsights وShield وGovernance وIntelligence وBridge | **نماذج أولية / منفذة جزئيًا** | `backend/modules/features.py`; بعض الحالات والقيود مغطاة بالاختبارات. المساعد قاعدي محلي، والحوكمة إشارية، والجسر يرفض التحويل. | وصل الدفع لا يتحقق بعد من المعاملة على العقدة ويعيد `pending-verification`; Insights يعتمد مدخلات المستدعي؛ لا مزود LLM أو تسوية فعلية. |
 | الاختبارات | **مكتملة ومختبرة لما تغطيه حاليًا** | `tests/test_kenan.py`: 17 اختبار Python ناجحًا؛ Rust: 2 ناجحان. | تغطية محدودة؛ لا اختبار أمني مستقل، أو fuzzing، أو اختبار حمل/تزامن، أو Android instrumentation على جهاز. |
-| CI والبناء | **Workflow موجود، ولم يُختبر على GitHub بعد** | أضيف `.github/workflows/ci.yml` لـPython وRust وبناء Android debug؛ أضيف Gradle Wrapper 8.9. | يلزم تشغيل workflow على GitHub ومراجعة نتيجة أول run قبل اعتباره CI ناجحًا. لا يوجد توقيع Release أو نشر نهائي. |
+| CI والبناء | **موجود واختُبر بنجاح على GitHub** | [تشغيل Kenan CI رقم 40388581691](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40388581691): نجحت وظائف Python وRust وبناء Android debug. | أُصلح فشل المحاولة الأولى (كانت action قديمة تطلب SDK package `tools` المحذوفة) بتحديث الإعداد إلى `setup-android@v4` وتثبيت SDK 34 صراحةً. لا يوجد توقيع Release أو نشر نهائي. |
 | التوثيق | **موجود؛ صُحح جزئيًا** | `README.ar.md`, `docs/STATUS.md`, `docs/ANDROID.md`, `docs/SECURITY.md`, `docs/OPERATIONS.md`. | يلزم مواصلة تحديث الادعاءات بالتوازي مع كل وظيفة، خصوصًا حماية حالة السلسلة وخطة Polkadot والإطلاق. |
 
 ## ما كان جاهزًا قبل التدخل
@@ -36,15 +36,16 @@
 - شددت تحقق السلسلة من أنواع الحقول وعنوان المرسل و`memo`، وفرضت الرسم الثابت المعلن `0.001 KEN` بدل قبول رسوم متغيرة.
 - جعلت وصل Pay يصرح بأنه غير متحقق، وصححت مصدر بيانات Insights إلى بيانات يقدمها المستدعي، لا سجلًا على السلسلة.
 - أصلحت إعداد Compose مع Kotlin 1.9.24، وأضفت Gradle Wrapper وAndroidX وTheme.Kenan؛ نقلت RPC إلى `Dispatchers.IO`، وجعلت السماح بـHTTP محصورًا في Manifest الخاص بـdebug.
-- أضفت Workflow CI وتحديثات توثيق؛ أضفت اختبارات انحدار جديدة ورفعت عدد Python من 14 إلى 17.
+- أضفت Workflow CI واختبرته على GitHub. بعد أن كشف التشغيل الأول أن `setup-android@v3` يحاول طلب حزمة SDK القديمة `tools`، حدّثت إلى `v4` وأعدت التشغيل؛ نجحت الوظائف الثلاث. أضفت اختبارات انحدار جديدة ورفعت عدد Python من 14 إلى 17.
 
 ## نتائج البناء والتحقق
 
 - Python: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` — **17 ناجحًا، 0 فاشل**.
 - Rust: `cargo test --locked` داخل `rust-core/` — **2 ناجحان، 0 فشل**؛ لا doc-tests.
 - Android: `./gradlew --no-daemon :app:assembleDebug` — **BUILD SUCCESSFUL**؛ و`:app:lintDebug` — **BUILD SUCCESSFUL**. ظهرت ملاحظة توافق إصدار Android SDK XML أثناء البناء، لكنها لم تمنعه.
+- GitHub CI: [run 40388581691](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40388581691) — **success**: Python tests وRust core tests وAndroid debug APK.
 - APK: `android-app/app/build/outputs/apk/debug/app-debug.apk`، الحزمة `com.kenan.wallet`، الإصدار `0.1.0-devnet`، الحجم `8,809,612` بايت. تحققت أداة `apksigner` من التوقيع؛ هو توقيع Debug القياسي، وليس توقيع إصدار موثوقًا. SHA-256 للملف: `0ffea95c1fe8b1916a2a8bad314540738d522bf53de237dfc167f322e51d9782`.
-- لم يُثبّت APK على جهاز. لم يُشغّل CI البعيد بعد.
+- لم يُثبّت APK على جهاز؛ لم يكن هناك هاتف أو محاكي متصل.
 
 ## ما يلزم قبل شبكة KEN مستقلة أو إطلاق آمن
 
@@ -53,4 +54,4 @@
 3. إكمال Android KeyStore وإنشاء/استعادة المحفظة والتوقيع المحلي وعرض المستلم والمبلغ والرسوم قبل التوقيع، ثم اختبار على أجهزة حقيقية مع اتصال إنتاجي آمن.
 4. بناء Backend دائم بمعاملات ذرية ومصادقة وصلاحيات ومراقبة، وربط عمليات Pay والتداول بالشبكة فعليًا؛ لا تعامل دفتر DEMO الحالي كأموال أو بورصة.
 5. إكمال مراجعة أمنية مستقلة واختبار اختراق، إدارة مفاتيح إصدار موثقة، خطط نسخ احتياطي واستعادة واستجابة للحوادث، ومراجعة قانونية/ترخيصية قبل أي استخدام عام.
-6. تشغيل CI على GitHub والتحقق من النتائج بعد رفع التغييرات؛ لا يوجد حتى الآن نجاح CI بعيد مثبت.
+6. توسيع CI باختبارات Android على محاكي وأجهزة، واختبارات fuzzing والحمل والتزامن؛ نجاح الوظائف الثلاث الحالية لا يغني عن مراجعة أمنية أو اختبار جهاز.
