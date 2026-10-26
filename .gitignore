@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/chain.json
+data/chain.json.tmp
+data/audit.log
+rust-core/target/
+android-app/.gradle/
+android-app/app/build/
+*.keystore
+*.jks
+.env
