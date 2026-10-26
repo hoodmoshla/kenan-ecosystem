@@ -60,6 +60,12 @@ class TestWallet(unittest.TestCase):
         bad = dict(tx, amount=999)
         self.assertFalse(verify_signature(bad))
 
+    def test_known_bip39_devnet_vector(self):
+        w = wallet.restore_wallet("abandon " * 23 + "art")
+        tx = wallet.sign_transfer(w, "kenan1" + "a" * 40, 123456789, BASE_FEE, 0)
+        self.assertEqual(w["address"], "kenan1e28c3608979d45d2c7dc74b1c19519e54ce8961c")
+        self.assertEqual(tx["signature"], "83996074af8b16499df9e5c75fce1de46e9495ed50585d5ed26548c949a50ed26f278e5b938df56ed63dd1bb109e00fa5f2504304b8bb18e5de48408a980e40b")
+
 
 class TestChain(unittest.TestCase):
     def setUp(self):
@@ -126,8 +132,43 @@ class TestChain(unittest.TestCase):
         res = self.chain.submit(tx)
         reloaded = Chain(path=os.path.join(self.tmp.name, "chain.json"))
         self.assertEqual(reloaded.balance(self.bob["address"]), 5 * UNIT)
+        self.assertEqual(reloaded.balance(self.alice["address"]), 1000 * UNIT - 5 * UNIT - BASE_FEE)
+        self.assertEqual(reloaded.nonces[self.alice["address"]], 1)
+        self.assertEqual(reloaded.total_supply, self.chain.total_supply)
+        self.assertEqual(reloaded.burned, self.chain.burned)
         self.assertIsNotNone(reloaded.get_tx(res["hash"]))
         self.assertIsNone(reloaded.get_tx("0" * 64))
+        with self.assertRaises(ValueError):
+            reloaded.submit(tx)
+
+    def test_faucet_is_recorded_and_capped_across_restart(self):
+        self.chain.faucet(self.bob["address"], 500 * UNIT)
+        self.assertEqual(self.chain.blocks[-1]["txs"][0]["kind"], "faucet")
+        reloaded = Chain(path=os.path.join(self.tmp.name, "chain.json"))
+        self.assertEqual(reloaded.balance(self.bob["address"]), 500 * UNIT)
+        with self.assertRaises(ValueError):
+            reloaded.faucet(self.bob["address"], 501 * UNIT)
+
+    def test_modified_balance_snapshot_is_rejected(self):
+        path = os.path.join(self.tmp.name, "chain.json")
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        data["balances"][self.alice["address"]] += 1
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+        with self.assertRaisesRegex(ValueError, "snapshot"):
+            Chain(path=path)
+
+    def test_modified_transaction_ledger_is_rejected(self):
+        self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], UNIT, BASE_FEE, 0))
+        path = os.path.join(self.tmp.name, "chain.json")
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        data["blocks"][-1]["txs"][0]["amount"] += 1
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+        with self.assertRaisesRegex(ValueError, "transaction hash"):
+            Chain(path=path)
 
 
 class TestExchange(unittest.TestCase):
@@ -276,6 +317,33 @@ class TestHttpIntegration(unittest.TestCase):
         proxied = get(self.api_url + f"/backend/balance/{bob['address']}")
         self.assertEqual(proxied["balance_ken"], 10)
         self.assertEqual(proxied["source"], "live node RPC")
+
+    def test_node_rejects_non_object_json_body(self):
+        request = urllib.request.Request(
+            self.node_url + "/tx/submit", data=b"[]",
+            headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(error.exception.code, 400)
+
+    def test_faucet_is_denied_when_loopback_mutations_are_disabled(self):
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), node_handler(self.chain, allow_loopback_mutations=False))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        address = wallet.create_wallet()["address"]
+        before = self.chain.balance(address)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/faucet",
+            data=json.dumps({"address": address}).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(error.exception.code, 403)
+            self.assertEqual(self.chain.balance(address), before)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_backend_demo_order_and_shield(self):
         post(self.api_url + "/exchange/deposit-demo", {"user": "s", "asset": "KEN", "amount": 5})

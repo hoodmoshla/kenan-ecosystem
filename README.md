@@ -2,36 +2,44 @@
 
 Arabic README: [README.ar.md](README.ar.md)
 
-**Status: devnet / demo only. No real money, no mainnet, no public listing.**
-See [docs/STATUS.md](docs/STATUS.md) for exactly what was verified by tests
-and what is still pending — do not present demo balances as real.
+**Status: development devnet and demos only. No real money, mainnet, public listing, or production security review.** See [docs/STATUS.md](docs/STATUS.md) for verified results and remaining blockers.
 
-## What exists here
-- `blockchain/` — devnet chain core + HTTP node: Ed25519-signed KEN
-  transfers, fees (50% burn), hash-chained blocks, persistent state.
-- `wallet-core/` — BIP39 self-custody wallet: create/restore/sign locally.
-- `rust-core/` — Rust Ed25519 signing + address derivation (same format).
-- `backend/` — API + DEMO exchange matching engine + Circles, Pay,
-  Recovery (proposal machine, no key custody), Academy, Insights, Shield,
-  Governance (signalling), Intelligence (rule-based, no keys), Bridge (disabled).
-- `explorer/` + node `/explorer` — block/tx/account/supply viewer from live RPC.
-- `android-app/` — Kotlin/Compose RTL wallet source; debug APK builds, but
-  wallet creation/signing and device testing are not complete.
-- `tests/` — 17 automated tests covering chain, wallet, exchange, modules, HTTP.
+## What exists
+- `blockchain/` — a single-node Python devnet with signed Ed25519 transfers, fixed fees, hash-linked blocks, persisted ledger events, and replay-based state reconstruction. Faucet issuance is explicitly recorded and capped per address.
+- `wallet-core/` — the Python reference wallet; its BIP39/Ed25519 derivation is the compatibility target for Android.
+- `android-app/` — Kotlin/Compose RTL wallet: create or restore a 24-word BIP39 wallet, encrypt the phrase with AES-GCM using an Android Keystore key, show live balance and a receive QR, preview recipient/amount/fee, sign locally, submit to the current Python devnet RPC, then verify the returned transaction. Debug build only; no device/emulator test has been performed.
+- `rust-core/` — a small Rust signing/address library, not a chain node.
+- `backend/` — API and DEMO exchange/matching modules; demo exchange balances are in-memory and not settled on-chain.
+- `explorer/` and node `/explorer` — read-only views of the Python devnet.
+- `tests/` — **23 Python tests**. Android has **4 JVM unit tests** for BIP39, signing, amount conversion, and Python compatibility. Rust has **2 tests**.
 
-## Quick start
+All KEN balances are devnet test data. The Python node is not distributed consensus infrastructure; do not expose it as a public financial service.
+
+## Run the devnet
+
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 python3 -m blockchain.node_server --port 8545 --data data/chain.json
 KENAN_NODE_URL=http://127.0.0.1:8545 python3 -m backend.app --port 8000
-python3 scripts/demo.py   # end-to-end devnet demo with test wallets
 python3 -m unittest discover -s tests -v
 ```
-Explorer: http://127.0.0.1:8545/explorer · API: [docs/API.md](docs/API.md)
 
-## Rules that are enforced, not just documented
-- Balances come from chain state, never from an app database.
-- Demo exchange balances are labelled DEMO everywhere and isolated.
-- No private key/seed ever leaves the signing process or reaches the backend/AI.
-- No button reports success for an operation that was not executed and verified.
-- Bridge transfers are refused until an independent audit exists.
+Explorer: <http://127.0.0.1:8545/explorer> · API details: [docs/API.md](docs/API.md)
+
+## Build and test Android
+
+With Android SDK 34 and JDK 17 or newer:
+
+```bash
+cd android-app
+./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+The default Debug endpoint is `http://10.0.2.2:8545` for the Android emulator talking to a node on the host. Override at build time with `-PkenanNodeUrl=http://<reachable-devnet-host>:8545`. HTTP is allowed only in Debug; do not use a public or untrusted network. For setup and wallet-security notes see [docs/ANDROID.md](docs/ANDROID.md).
+
+## Project rules
+
+- Account balances are read from the node; the Android app keeps no local balance ledger.
+- The Android signing key/phrase is not sent to the node or backend; the phrase is encrypted at rest, then used locally to sign.
+- A transfer is not reported as successful until its hash and fields are read back and checked over RPC.
+- DEMO exchange balances are separate from on-chain KEN; the bridge remains disabled.

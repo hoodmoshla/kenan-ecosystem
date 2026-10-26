@@ -1,31 +1,30 @@
 # Kenan Ecosystem — verified status (2026-10-26)
 
-This status describes only the GitHub repository snapshot and work verified in this session. No separate pre-existing local project copy was available to inspect.
+This status covers the checked repository snapshot and the work verified in this change. It does not imply production readiness.
 
-## Verified in this session
+## Verified
 
-- **Python:** `python3 -m unittest discover -s tests -v` — 17 tests passed. Coverage includes BIP39 wallet creation/restore/signing, devnet transfers/nonces/fees, HTTP integration, demo exchange behavior, and prototype modules. The tests use generated test keys and temporary chain state.
-- **Rust:** `cargo test --locked` in `rust-core/` — 2 unit tests passed; 0 doc-tests. This is a small signing/address library, not a blockchain node.
-- **Android:** `./gradlew --no-daemon :app:assembleDebug` — BUILD SUCCESSFUL with Gradle 8.9, JDK 21, and the installed Android SDK. The debug APK was verified with `apksigner` and `aapt`; it was not installed on a device because no emulator or device was connected. This is a debug build signed with the standard debug certificate, not a release build.
-- **CI:** GitHub Actions run [40388581691](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40388581691) completed successfully on the repair branch: Python tests, Rust tests, and Android debug APK build all passed. The initial run failed before Gradle because the old Android setup action requested a removed SDK package; setup was updated and the follow-up run passed.
+- **Python:** `python3 -m unittest discover -s tests -v` — **23/23 passed**. Tests cover BIP39 reference wallet, signed transfers/nonces/fees, HTTP integration, replay rejection after reload, faucet ledger/cap, snapshot and transaction tampering rejection, demo exchange behavior, and prototype modules.
+- **Rust:** `cargo test --locked --manifest-path rust-core/Cargo.toml` — **2/2 unit tests passed**, 0 doc-tests. This remains a small signing/address library, not a chain node.
+- **Android:** `:app:testDebugUnitTest` — **4/4 passed**. The known BIP39 address, public key, Ed25519 signature, and transaction hash match the Python reference. `:app:lintDebug` and `:app:assembleDebug` are the CI build gates. The Debug APK was verified with `apksigner` and `aapt`; it is signed with the standard Debug key, not a release key. **No emulator or physical device was connected**, so installation, Android Keystore runtime behavior, QR scanning by another device, and UI-to-node interaction were not tested on-device.
+- **Current local Debug APK:** `android-app/app/build/outputs/apk/debug/app-debug.apk`; package `com.kenan.wallet`, version `0.1.0-devnet`, **12,845,906 bytes**. `apksigner` verified APK Signature Scheme v2; SHA-256: `d21715d16c2c5caea2d919b49cf6b4a5a6513a3e0738f68bf460f338d10af12f`.
+- **CI:** `.github/workflows/ci.yml` runs Python, Rust, and Android tests/lint/Debug APK build; the Android APK is uploaded as a short-lived workflow artifact. Check the linked Actions run for the commit-specific result.
 
-## What the code currently provides
+## What the repository provides
 
-- `blockchain/`: a local Python devnet with Ed25519-signed transfers, sequential nonces, a fixed 0.001 KEN fee, half-fee burn, hash-linked block headers, JSON persistence, and HTTP RPC. This is a test implementation, not consensus-secure infrastructure. The balance/nonce snapshot in the JSON file is not independently rebuilt from a complete ledger; do not trust edited or externally supplied state files.
-- `wallet-core/`: a Python BIP39 reference wallet supporting 24-word phrase creation, restore, backup proof, and local Ed25519 signing. It does not implement the Android user's wallet storage.
-- `rust-core/`: signing/address-derivation primitives with two unit tests. There is no Polkadot SDK/Substrate node here.
-- `backend/`: HTTP APIs and a demo matching engine. Exchange balances and orders are in memory and disappear when the process restarts; trades are not settled to the chain. The engine remains DEMO-only.
-- `android-app/`: a Kotlin/Compose RTL shell. It can read account/chain information through the Python node client when run in a suitable development environment. Wallet creation/recovery, Android Keystore storage, transaction signing/submission from the UI, QR receive, real exchange flows, and device-level testing remain incomplete.
-- `explorer/` and the node `/explorer` page: read-only views backed by the Python devnet RPC. They do not support a Polkadot chain.
-- `admin/`: a monitoring page for a single token-gated backend status endpoint, not a complete administration console.
-- `backend/modules/features.py`: early/demo modules. Intelligence is rule-based; Governance is off-chain signalling; Recovery is a proposal state machine; Pay does not yet verify the transaction against the node; Insights accepts caller-supplied holdings; Bridge is deliberately disabled.
+- `blockchain/`: a single-process Python devnet with Ed25519 signed transfers, sequential nonces, fixed fee of 0.001 KEN, half-fee burn, hash-linked blocks, and JSON persistence. Schema v2 rebuilds balances, nonces, issued faucet amounts, supply, burned amount, replay set, and transaction lookup from block events on restart; it rejects snapshot/ledger mismatches and invalid signatures. Faucet events are recorded and capped at 1000 KEN per address. Faucet and empty-block mining are loopback-only by default; a non-loopback operator must configure `KENAN_FAUCET_TOKEN` and send `X-Faucet-Token`. This is still a local devnet, not consensus or a cryptographic trust anchor; a party able to rewrite the whole local ledger can recompute its hashes.
+- **Older chain state:** previous snapshots that do not record faucet issuance cannot be safely reconstructed. On mismatch the new loader refuses to trust or overwrite the file. No `data/chain.json` was present in the checked workspace; only an audit log was present. Preserve and back up any older state before starting the new node; do not delete it to silence a startup error.
+- `wallet-core/`: Python BIP39 reference with 24-word creation/recovery and Ed25519 local signing.
+- `android-app/`: Android wallet interoperable with the Python reference. Mnemonic is encrypted at rest with AES-GCM and a non-exportable Android Keystore AES key; transaction signing uses the matching locally-derived Ed25519 key. The UI shows live RPC balance/address, a QR receive address, and recipient/amount/fee/total before explicit local signing. On confirmation it re-reads nonce/balance, submits once, and verifies the transaction by hash and fields via RPC. Network errors are not auto-resubmitted.
+- `backend/`: HTTP API and in-memory DEMO matching engine; demo balances and orders disappear on restart and are not settled to chain.
+- `explorer/`: read-only views for the Python devnet.
+- `docs/POLKADOT.md`: staged plan only; no Polkadot SDK runtime or node has been built.
 
-## Not implemented / release blockers
+## Still incomplete / blockers
 
-- Polkadot SDK/Substrate runtime, node, validators, consensus, and network migration.
-- Mainnet, public KEN issuance/listing, real-money trading, custody, and audited bridge.
-- Production wallet creation/recovery and Android Keystore integration.
-- Persistent and auditable exchange backend, verified on-chain payment receipts, real price feed, and external LLM provider.
-- Independent security review, penetration testing, legal/licensing review, production operations, backups/restore drills, and release signing key verified against a known project certificate.
+- Polkadot SDK/Substrate runtime, node, validators, consensus and the network adapter/migration. Python devnet remains the current test model until the documented gates pass.
+- Android device/emulator installation, Android Keystore instrumentation tests, QR verification on a second device, accessibility/small-screen checks, and a full UI-to-live-node flow test.
+- Release signing with a project-owned key whose fingerprint is verified; HTTPS endpoint configuration for a release; independent security review and penetration testing.
+- Production custody, mainnet, real KEN issuance/listing, real-money trading, audited bridge, durable exchange, verified payment receipts, external price feed, and production operations/backups.
 
-All balances and transactions in this Python chain are devnet test data. Do not expose the faucet or node to an untrusted/public network and do not present this project as production financial infrastructure.
+All balances and transactions are devnet test data. Do not expose the node or faucet to an untrusted network or present the project as production financial infrastructure.

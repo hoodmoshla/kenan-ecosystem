@@ -43,7 +43,7 @@ jobs:
         with:
           packages: ''
       - run: yes | sdkmanager "platforms;android-34" "build-tools;34.0.0"
-      - run: ./gradlew --no-daemon :app:assembleDebug
+      - run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
         working-directory: android-app
       - uses: actions/upload-artifact@v4
         with:
