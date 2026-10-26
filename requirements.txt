@@ -1,0 +1,2 @@
+cryptography>=42
+mnemonic>=0.20
