@@ -1,0 +1,15 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kenan Explorer — شبكة تجريبية</title>
+<style>body{font-family:system-ui,sans-serif;background:#0b2a3a;color:#f8f3e7;max-width:900px;margin:auto;padding:16px}
+.card{background:#12394d;border-radius:12px;padding:16px;margin:12px 0}.warn{color:#f2c14e}
+pre{white-space:pre-wrap;word-break:break-all}</style></head><body>
+<h1>🔍 Kenan Explorer</h1><p class="warn">شبكة تجريبية — أرصدة اختبارية فقط. هذه الصفحة المستقلة تقرأ من عقدة تعمل على نفس المضيف؛ افتحها عبر العقدة نفسها: <code>/explorer</code>، أو شغّل العقدة ثم غيّر <code>NODE</code> أدناه.</p>
+<div class="card" id="info">جارٍ التحميل…</div>
+<div class="card"><h2>أحدث الكتل</h2><pre id="blocks"></pre></div>
+<script>const NODE='http://127.0.0.1:8545';
+async function load(){try{const i=await (await fetch(NODE+'/chain/info')).json();
+document.getElementById('info').innerHTML=`الشبكة: ${i.chain_id} | الارتفاع: ${i.height} | المعروض: ${i.total_supply_ken} KEN (اختباري) | المحروق: ${i.burned_base} وحدة | آخر تحديث: ${new Date().toLocaleString('ar')}`;
+const b=await (await fetch(NODE+'/blocks?limit=10')).json();
+document.getElementById('blocks').textContent=JSON.stringify(b,null,2);}catch(e){document.getElementById('info').textContent='العقدة غير متاحة — شغّل: python3 -m blockchain.node_server';}}
+load();setInterval(load,5000);</script></body></html>
