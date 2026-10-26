@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">محفظة كنان</string>
+    <string name="send">إرسال</string>
+    <string name="receive">استقبال</string>
+    <string name="balance">الرصيد</string>
+    <string name="devnet_warning">شبكة تجريبية فقط — أرصدة اختبارية، وليست أموالاً حقيقية.</string>
+</resources>
