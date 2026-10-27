@@ -1,6 +1,6 @@
 # Kenan on Polkadot SDK — staged implementation plan
 
-**Status: planning only.** This repository has no Polkadot SDK node or runtime. The Python chain in `blockchain/` remains the current working test model and must remain available until the migration gates below pass. Do not describe the plan as a running Substrate network.
+**Status: official source review completed; SDK implementation has not started.** This repository has no Polkadot SDK node or runtime. The Python chain in `blockchain/` remains the current working test model and must remain available until the migration gates below pass. Do not describe the plan as a running Substrate network.
 
 ## 1. Decide the chain policy first (about 2–5 working days)
 
@@ -10,7 +10,7 @@ Document and approve the testnet token issuance/distribution, symbol `KEN`, 9 de
 
 ## 2. Build a separate solo-chain node (roughly 1–2 weeks for an experienced Rust team)
 
-At implementation time, re-check the official `paritytech/polkadot-sdk` releases, the official node-template guidance and system requirements. The version string previously discussed in this repository is only a planning lead; do not pin it from memory. Choose an official supported release/commit, record the toolchain and lockfiles, and create an isolated workspace such as `polkadot/`. Do not replace `blockchain/` or the `rust-core/` library.
+The official sources were checked on 2026-10-27. `polkadot-stable2603-7` (tag commit `cd87d0b95e54c8ffc374334386f3f2b2c7a61f54`, release-tested Rust `1.93.0`) is the current evaluation candidate; see `docs/POLKADOT_SDK_RESEARCH.md` for sources and compatibility notes. This is research, not a dependency pin or a claim of a successful build. Before implementation, create and build an isolated workspace such as `polkadot/`, pin the SDK/toolchain and lockfiles, and verify the official template against that exact release. Do not replace `blockchain/` or the `rust-core/` library.
 
 Start from the official solo-chain/node template for the chosen SDK. Build a local single-validator dev chain first. Add only the agreed runtime configuration and required pallets (for example System, Timestamp, Aura, GRANDPA, Balances and TransactionPayment). Keep `Sudo` dev-only and remove it before any public testnet. Do not add a custom pallet without a specified requirement.
 

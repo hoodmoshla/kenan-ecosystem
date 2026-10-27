@@ -1,30 +1,28 @@
-# Kenan Ecosystem — verified status (2026-10-26)
+# Kenan Ecosystem — verified status (2026-10-27)
 
-This status covers the checked repository snapshot and the work verified in this change. It does not imply production readiness.
+This status records local verification for the wallet/RPC and DEMO-exchange change. It is not a production-readiness claim.
 
-## Verified
+## Verified checks and artifact
 
-- **Python:** `python3 -m unittest discover -s tests -v` — **23/23 passed**. Tests cover BIP39 reference wallet, signed transfers/nonces/fees, HTTP integration, replay rejection after reload, faucet ledger/cap, snapshot and transaction tampering rejection, demo exchange behavior, and prototype modules.
-- **Rust:** `cargo test --locked --manifest-path rust-core/Cargo.toml` — **2/2 unit tests passed**, 0 doc-tests. This remains a small signing/address library, not a chain node.
-- **Android:** `:app:testDebugUnitTest` — **4/4 passed**. The known BIP39 address, public key, Ed25519 signature, and transaction hash match the Python reference. `:app:lintDebug` and `:app:assembleDebug` are the CI build gates. The Debug APK was verified with `apksigner` and `aapt`; it is signed with the standard Debug key, not a release key. **No emulator or physical device was connected**, so installation, Android Keystore runtime behavior, QR scanning by another device, and UI-to-node interaction were not tested on-device.
-- **Current local Debug APK:** `android-app/app/build/outputs/apk/debug/app-debug.apk`; package `com.kenan.wallet`, version `0.1.0-devnet`, **12,845,906 bytes**. `apksigner` verified APK Signature Scheme v2; SHA-256: `d21715d16c2c5caea2d919b49cf6b4a5a6513a3e0738f68bf460f338d10af12f`.
-- **CI:** `.github/workflows/ci.yml` runs Python, Rust, and Android tests/lint/Debug APK build; the Android APK is uploaded as a short-lived workflow artifact. Check the linked Actions run for the commit-specific result.
+- **Python:** `python3 -m unittest discover -s tests -v` — **32/32 passed**. Includes bind-address safety, signed devnet transfers, persistence/replay checks, HTTP RPC integration and DEMO order matching.
+- **Rust:** `cargo test --locked --manifest-path rust-core/Cargo.toml` — **2/2 passed**. `rust-core/` remains a small signing/address library, not a blockchain node.
+- **Android:** `:app:testDebugUnitTest` — **15/15 passed**; `:app:lintDebug` — **0 errors, 8 advisory warnings**; `:app:assembleDebug` — passed. The lint warnings are target-SDK/dependency-update suggestions; dependencies were not upgraded blindly across the existing Compose/Kotlin toolchain.
+- **Debug APK:** `android-app/app/build/outputs/apk/debug/app-debug.apk`; package `com.kenan.wallet`, version `0.2.0-devnet` (code 2), **12,639,007 bytes**. APK Signature Scheme v2 verified. SHA-256: `dfc4eef8f99e3bae5578c7eefcf616f0c2ecc3e23dd33fbeec7f2dfc0eb93d97`. It is signed with the standard Android Debug certificate, not a project release key.
+- **CI:** `.github/workflows/ci.yml` runs Python, Rust and Android tests/lint/Debug build and uploads the APK as a 7-day artifact. The branch-specific Actions result must be checked after the Git push.
 
-## What the repository provides
+## Implemented in this change — development only
 
-- `blockchain/`: a single-process Python devnet with Ed25519 signed transfers, sequential nonces, fixed fee of 0.001 KEN, half-fee burn, hash-linked blocks, and JSON persistence. Schema v2 rebuilds balances, nonces, issued faucet amounts, supply, burned amount, replay set, and transaction lookup from block events on restart; it rejects snapshot/ledger mismatches and invalid signatures. Faucet events are recorded and capped at 1000 KEN per address. Faucet and empty-block mining are loopback-only by default; a non-loopback operator must configure `KENAN_FAUCET_TOKEN` and send `X-Faucet-Token`. This is still a local devnet, not consensus or a cryptographic trust anchor; a party able to rewrite the whole local ledger can recompute its hashes.
-- **Older chain state:** previous snapshots that do not record faucet issuance cannot be safely reconstructed. On mismatch the new loader refuses to trust or overwrite the file. No `data/chain.json` was present in the checked workspace; only an audit log was present. Preserve and back up any older state before starting the new node; do not delete it to silence a startup error.
-- `wallet-core/`: Python BIP39 reference with 24-word creation/recovery and Ed25519 local signing.
-- `android-app/`: Android wallet interoperable with the Python reference. Mnemonic is encrypted at rest with AES-GCM and a non-exportable Android Keystore AES key; transaction signing uses the matching locally-derived Ed25519 key. The UI shows live RPC balance/address, a QR receive address, and recipient/amount/fee/total before explicit local signing. On confirmation it re-reads nonce/balance, submits once, and verifies the transaction by hash and fields via RPC. Network errors are not auto-resubmitted.
-- `backend/`: HTTP API and in-memory DEMO matching engine; demo balances and orders disappear on restart and are not settled to chain.
-- `explorer/`: read-only views for the Python devnet.
-- `docs/POLKADOT.md`: staged plan only; no Polkadot SDK runtime or node has been built.
+- `android-app/`: explicit RPC endpoint resolution. The emulator may use `10.0.2.2`; a physical phone gets no guessed LAN IP and must be configured with the computer's private Wi-Fi IP and port `8545`. UI distinguishes unconfigured, unreachable and empty-history states. No API is exposed to a public address by default.
+- `blockchain/node_server.py` and `network_utils.py`: node binding is limited to explicit local/private addresses; wildcard/public binds are rejected. `docs/ANDROID.md` documents the local firewall and phone setup.
+- Wallet storage now passes the stored AES-GCM IV into decryption and has tamper/round-trip JVM tests. The manifest disables backup and supplies explicit backup/data-extraction exclusions.
+- Android Compose wallet screens were redesigned and localized in Arabic/English. Chain balances and transfer history use RPC; the price chart does not fabricate prices. Transfer review rechecks nonce/balance/fee, signs locally, submits once, and verifies the returned transaction.
+- `backend/`: a separate, explicitly labelled in-memory DEMO market/order service is connected to the app. It is not settled on-chain and resets when the backend restarts; it is not a real exchange or durable ledger.
 
-## Still incomplete / blockers
+## Not verified or not implemented yet
 
-- Polkadot SDK/Substrate runtime, node, validators, consensus and the network adapter/migration. Python devnet remains the current test model until the documented gates pass.
-- Android device/emulator installation, Android Keystore instrumentation tests, QR verification on a second device, accessibility/small-screen checks, and a full UI-to-live-node flow test.
-- Release signing with a project-owned key whose fingerprint is verified; HTTPS endpoint configuration for a release; independent security review and penetration testing.
-- Production custody, mainnet, real KEN issuance/listing, real-money trading, audited bridge, durable exchange, verified payment receipts, external price feed, and production operations/backups.
+- **No Android emulator or physical phone was connected.** Installation, Android Keystore behavior on-device, LAN reachability from a phone, QR scanning, accessibility/small-screen behavior and a UI-to-live-node round trip remain to be tested on a real device.
+- **Polkadot SDK:** official source review is recorded in `docs/POLKADOT_SDK_RESEARCH.md`; `polkadot-stable2603-7` is an evaluation candidate only. No SDK workspace, runtime, node, validator, CI lane or wallet adapter has been built. Python devnet remains the sole working chain.
+- **Exchange:** no production custody, durable double-entry ledger, external deposit/withdrawal rails, settlement, payment verification or real-money trading. DEMO balances have no monetary value.
+- No release signing key, independent security audit or production operations review has been configured.
 
-All balances and transactions are devnet test data. Do not expose the node or faucet to an untrusted network or present the project as production financial infrastructure.
+All balances and transactions are test data. Do not expose the node or faucet to untrusted networks or present this project as production financial infrastructure.

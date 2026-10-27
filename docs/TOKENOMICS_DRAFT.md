@@ -1,25 +1,23 @@
-# KEN Tokenomics — DRAFT for review before any public network
+# مسودة اقتصاد KEN — خيارات غير معتمدة
 
-This is a draft, not a published monetary policy. Final numbers require
-review and must be re-issued before mainnet; devnet numbers below are
-test-only and do not bind mainnet.
+**الحالة:** هذه مسودة نقاش فقط، وليست سياسة نقدية منشورة أو إذنًا بإنشاء Genesis عام. أرصدة Python devnet بيانات اختبار بلا قيمة مالية، ولا تُنقل تلقائيًا إلى شبكة أخرى.
 
-- Unit: 1 KEN = 10^9 base units. Devnet chain id: kenan-devnet-1.
-- Devnet genesis: 100,000,000 test-KEN credited to the fee-collector
-  pseudo-account (see blockchain/kenan_chain.py). This is test supply.
-- Fee (devnet, verified in code): flat 0.001 KEN per transfer;
-  50% burned (reduces total supply, recorded per block), 50% to the
-  fee-collector. No percentage fee, no hidden fee.
-- Proposed mainnet alternatives to decide (do not present as decided):
-  A) Fixed cap 1,000,000,000 KEN, validator rewards from fees only.
-  B) Fixed cap + scheduled emission with a halving-style decay.
-  C) No hard cap, emission governed by on-chain vote with a published
-     inflation ceiling. Each option's inflation / concentration risk
-     must be modelled before choosing.
-- Circulating vs total vs locked vs burned: circulating = total supply
-  minus locked allocations minus burned, all read from chain state —
-  never from an app database. Vesting schedules, team/treasury/community
-  allocations are UNDECIDED and must be published with release dates
-  before any sale or distribution.
-- Risks: concentration at genesis, fee-market volatility, validator
-  centralisation on a small devnet, bridge/custody risk (bridge disabled).
+## إعدادات Python devnet الحالية (للمقارنة فقط)
+
+يستخدم النموذج الحالي الرمز `KEN` و9 منازل عشرية ومعرّف الشبكة `kenan-devnet-1`. يحتوي Genesis الاختباري على 100,000,000 KEN في حساب محصّل الرسوم التجريبي. رسم التحويل ثابت عند `0.001 KEN`؛ يُحرق نصفه ويذهب النصف الآخر إلى محصّل الرسوم. هذه أرقام تشغيلية في شبكة Python الحالية وليست قرارات معتمدة لاقتصاد Polkadot SDK أو mainnet.
+
+## القرارات المفتوحة والخيارات
+
+| القرار | الخيارات الممكنة | الأثر الذي يجب تقييمه | الحالة الحالية |
+|---|---|---|---|
+| الرمز والدقة | الإبقاء على `KEN` و9 منازل عشرية للمواءمة المؤقتة، أو تغييرهما قبل Genesis | تغيير الدقة لاحقًا يؤثر في مبالغ التحويل والتكامل مع المحفظة | `KEN`/9 في Python فقط؛ غير معتمدين للشبكة الجديدة |
+| المعروض والإصدار | معروض ثابت؛ أو سقف مع إصدار مجدول؛ أو إصدار مستمر بسقف تضخم معلن | الثابت أسهل للمحاسبة؛ والإصدار قد يمول المدققين لكنه يزيد مخاطر التضخم والتركيز | لا إجمالي ولا جدول معتمد |
+| التوزيع الأولي | لا تخصيص عام قبل القرار؛ أو مخصصات معلنة للمجتمع والخزانة والتطوير والمدققين | أي مخصص يحدد من يملك الأرصدة وتوقيتها؛ النسب والمستفيدون بحاجة إلى موافقة وتدقيق | لا نسب أو مستفيدين معتمدين |
+| الرسوم ومصيرها | رسم ثابت في devnet؛ أو رسم بحسب الوزن والحجم؛ وحرق كامل/جزئي أو توزيع على منتجي الكتل | تؤثر في قابلية التنبؤ ومقاومة إساءة الاستخدام وحوافز المنتجين | رسم Python الحالي للاختبار فقط |
+| الحد الأدنى للرصيد | صفر في شبكة تطوير؛ أو حد أدنى غير صفري | الحد قد يقلل الحسابات الصغيرة لكنه يمنع إنشاء أو إبقاء أرصدة دون الحد | غير محسوم |
+| الإدارة والترقية | صلاحية تطوير محلية مؤقتة؛ أو حوكمة/موافقة متعددة الأطراف لاحقًا | المفتاح المنفرد يركز السلطة؛ الحوكمة تحتاج قواعد تصويت واسترداد واضحة | `Sudo` مسموح للتطوير المحلي فقط، وليس اعتمادًا إنتاجيًا |
+| المدققون | مجموعة خاصة محددة للاختبار؛ أو قواعد عضوية/حوكمة مستقبلية | المجموعة الخاصة أسهل للاختبار لكنها لا تجعل الشبكة مفتوحة أو لامركزية | لا مفاتيح أو إجراءات إضافة/إزالة معتمدة |
+
+## بوابة ما قبل Genesis
+
+قبل تثبيت سياسة للشبكة الجديدة، يلزم قرار مكتوب بشأن الدقة والمعروض أو الإصدار والتوزيع والرسوم والحد الأدنى وصلاحيات الترقية وقواعد المدققين. عندها فقط يُنشأ chain spec تجريبي قابل لإعادة الإنشاء، وتوثّق بصمته، ويبقى موسومًا بأنه test-only. يجب ألا تودع مفاتيح مدققين في Git أو CI أو APK. لا تُعرض أرصدة الاختبار على أنها أموال، ولا تُعلن قيمة أو سعرًا أو تداولًا عامًا.
