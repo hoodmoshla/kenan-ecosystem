@@ -30,7 +30,7 @@ jobs:
       - run: cargo test --locked --manifest-path rust-core/Cargo.toml
 
   polkadot-sdk-local-node:
-    name: Polkadot SDK local node and signed transfer
+    name: Polkadot SDK local node integration and restart recovery
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -63,7 +63,7 @@ jobs:
           cache-dependency-path: polkadot/integration-test/package-lock.json
       - name: Install the pinned RPC integration-test client
         run: npm ci --ignore-scripts --no-audit --no-fund --prefix polkadot/integration-test
-      - name: Start the real local node and verify a finalized signed transfer
+      - name: Run signed transaction, invalid/replay, fee/nonce, finality, RPC outage and restart tests
         run: ./polkadot/test-local.sh
 
   android-debug:

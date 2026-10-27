@@ -22,6 +22,12 @@ Begin with an isolated workspace such as `polkadot/`; keep Python devnet, `walle
 - Regression checks remain green locally: Python **32/32**, Rust core **2/2**, and Android `testDebugUnitTest`, `lintDebug`, `assembleDebug` completed successfully. The SDK-specific GitHub Actions lane is added but has not been run remotely.
 - This proves the upstream template baseline only. It is not yet a Kenan-specific runtime/genesis or wallet integration. Invalid-signature/replay, restart recovery, wallet failure/delayed-finality behavior and the full phase gate remain open. Keep Phase 3 blocked until they pass.
 
+### What the pinned official template provides — and what Kenan still needs
+
+The pinned upstream [Solochain runtime](../polkadot/sdk/templates/solochain/runtime/src/lib.rs) composes System, Timestamp, Aura, GRANDPA, Balances, Transaction Payment, Sudo and the example Template pallet. Its [runtime configuration](../polkadot/sdk/templates/solochain/runtime/src/configs/mod.rs) includes Substrate's generic SS58 prefix `42`, `AccountId32`-compatible multi-signature accounts, a `u128` balance type, a `u32` nonce, an existential-deposit constant, and weight/length-based transaction-fee machinery. The [chain spec](../polkadot/sdk/templates/solochain/node/src/chain_spec.rs) supplies Development and Local Testnet presets. These are upstream starter capabilities and development defaults, not approved Kenan currency settings.
+
+The template does **not** define Kenan's approved asset name/precision, issuance or supply cap, distribution, fee destination, minimum-balance policy, governance, validator membership, production authority policy, Python-address migration, KenanWallet signing/metadata adapter, or exchange ledger. Sudo and development accounts are not a governance model or production key policy. A successful transfer on this template therefore proves SDK compatibility only; it does not make the chain a finished Kenan network. Any changes to monetary policy or privileged roles remain subject to the documented user decision gate.
+
 ### 2.1 Pin and build the baseline
 
 - Record the exact upstream SDK/template revision, tested Rust version, required targets and native build prerequisites. Commit the toolchain and Cargo lockfile; builds must use locked dependencies.
