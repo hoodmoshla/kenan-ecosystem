@@ -97,7 +97,6 @@ async function main() {
     assert.equal(decimals, 12, 'The test chain must expose the upstream template precision explicitly.');
     assert.ok(api.tx.balances?.transferKeepAlive, 'Balances transfer call is missing from runtime metadata.');
     assert.ok(api.tx.sudo?.sudo, 'Sudo call is missing from runtime metadata.');
-    assert.ok(api.rpc.payment?.queryInfo, 'Transaction-payment RPC is not registered.');
     console.log('PASS: test-only chain identity, runtime metadata and inherited display properties');
 
     const keyring = new Keyring({ type: 'sr25519' });
@@ -125,13 +124,13 @@ async function main() {
     const nonce = asBigInt(await api.rpc.system.accountNextIndex(alice.address));
     const transfer = api.tx.balances.transferKeepAlive(bob.address, amount.toString());
     await transfer.signAsync(alice, { nonce: nonce.toString(), era: 0 });
-    const feeQuote = await api.rpc.payment.queryInfo(transfer.toHex());
-    assert.ok(asBigInt(feeQuote.partialFee) > 0n, 'Transaction payment returned a zero fee quote.');
 
     const included = await submitAndWaitFinalized(transfer);
     const transferEvents = await eventsForExtrinsic(api, included.blockHash, included.txHash);
     assert.ok(transferEvents.some(({ event }) => event.section === 'system' && event.method === 'ExtrinsicSuccess'));
     assert.ok(transferEvents.some(({ event }) => event.section === 'balances' && event.method === 'Transfer'));
+    const feeEvent = transferEvents.find(({ event }) => event.section === 'transactionPayment' && event.method === 'TransactionFeePaid');
+    assert.ok(feeEvent, 'The finalized transfer did not emit TransactionFeePaid.');
     const after = await finalizedState(api, included.blockHash, [alice.address, bob.address]);
     const senderDelta = before.get(alice.address).free - after.get(alice.address).free;
     const recipientDelta = after.get(bob.address).free - before.get(bob.address).free;
@@ -139,6 +138,7 @@ async function main() {
     assert.ok(senderDelta > amount, 'Sender balance did not include a positive transaction fee.');
     const actualFee = senderDelta - amount;
     assert.ok(actualFee > 0n);
+    assert.equal(actualFee, asBigInt(feeEvent.event.data[1]), 'Balance delta does not match the finalized fee event.');
     assert.equal(after.get(alice.address).nonce, before.get(alice.address).nonce + 1n);
     console.log(`PASS: finalized balance transfer, nonce and positive runtime fee (${actualFee} base units)`);
 

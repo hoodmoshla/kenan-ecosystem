@@ -49,12 +49,13 @@ jobs:
           targets: wasm32v1-none
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake libclang-dev llvm-dev libssl-dev pkg-config protobuf-compiler
-      - uses: actions/cache@v4
+      - id: kenan-runtime-cache
+        uses: actions/cache@v4
         with:
-          path: polkadot/sdk/target
-          key: ${{ runner.os }}-polkadot-stable2603-7-rust-1.93.0-${{ hashFiles('polkadot/sdk/Cargo.lock') }}
+          path: polkadot/sdk/target/release/solochain-template-node
+          key: ${{ runner.os }}-kenan-runtime-rust-1.93.0-${{ hashFiles('polkadot/sdk/Cargo.lock', 'polkadot/kenan-runtime/apply-overlay.py') }}
           restore-keys: |
-            ${{ runner.os }}-polkadot-stable2603-7-rust-1.93.0-
+            ${{ runner.os }}-kenan-runtime-rust-1.93.0-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -62,10 +63,25 @@ jobs:
           cache-dependency-path: polkadot/integration-test/package-lock.json
       - name: Install the pinned RPC integration-test client
         run: npm ci --ignore-scripts --no-audit --no-fund --prefix polkadot/integration-test
-      - name: Build and test the Kenan Runtime overlay on a local node
+      - name: Build or reuse the Kenan Runtime node binary
+        env:
+          KENAN_RUNTIME_BUILD_ONLY: "1"
+          KENAN_RUNTIME_SKIP_BUILD: ${{ steps.kenan-runtime-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
           bash ./polkadot/kenan-runtime/test-runtime.sh 2>&1 | tee "$RUNNER_TEMP/kenan-runtime-ci.log"
+      - name: Save compiled Kenan Runtime node before tests
+        if: steps.kenan-runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: polkadot/sdk/target/release/solochain-template-node
+          key: ${{ runner.os }}-kenan-runtime-rust-1.93.0-${{ hashFiles('polkadot/sdk/Cargo.lock', 'polkadot/kenan-runtime/apply-overlay.py') }}
+      - name: Run Kenan Runtime integration tests
+        env:
+          KENAN_RUNTIME_SKIP_BUILD: "1"
+        run: |
+          set -euo pipefail
+          bash ./polkadot/kenan-runtime/test-runtime.sh 2>&1 | tee -a "$RUNNER_TEMP/kenan-runtime-ci.log"
       - name: Upload Kenan Runtime test log
         if: always()
         uses: actions/upload-artifact@v4

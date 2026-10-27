@@ -60,13 +60,21 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 
-printf 'Building Kenan test runtime from pinned SDK %s...\n' "$EXPECTED_SDK_REV"
-cargo +1.93.0 build --locked --release --manifest-path "$SDK/templates/solochain/node/Cargo.toml"
+if [[ "${KENAN_RUNTIME_SKIP_BUILD:-0}" == "1" || "${KENAN_RUNTIME_SKIP_BUILD:-0}" == "true" ]]; then
+  printf 'Reusing the exact cached Kenan test node for SDK %s.\n' "$EXPECTED_SDK_REV"
+else
+  printf 'Building Kenan test runtime from pinned SDK %s...\n' "$EXPECTED_SDK_REV"
+  cargo +1.93.0 build --locked --release --manifest-path "$SDK/templates/solochain/node/Cargo.toml"
+fi
 
 NODE_BIN="$SDK/target/release/solochain-template-node"
 if [[ ! -x "$NODE_BIN" ]]; then
   echo "Expected node binary not found: $NODE_BIN" >&2
   exit 1
+fi
+if [[ "${KENAN_RUNTIME_BUILD_ONLY:-0}" == "1" ]]; then
+  printf 'Kenan test node build is ready: %s\n' "$NODE_BIN"
+  exit 0
 fi
 BASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kenan-runtime-test.XXXXXX")"
 NODE_LOG="$BASE_DIR/node.log"
