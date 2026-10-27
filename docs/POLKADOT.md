@@ -68,6 +68,14 @@ Only after Phase 2 passes:
 
 **Phase 3 completion gate:** wallet transfer and balance read-back succeed on a real local SDK node; wrong nonce/replay and network mismatch are rejected; RPC failure/delayed confirmation are handled honestly; Python remains selectable and unchanged.
 
+## Requested Phase 3 — Kenan test-only Runtime overlay (2026-10-28)
+
+- Feature branch `feat/kenan-runtime-customization-2026-10-27`, code commit [`7a6a3c3e`](https://github.com/hoodmoshla/kenan-ecosystem/commit/7a6a3c3e2bed48e6b39d0a012c52304b7c8aee15), passed [GitHub Actions run 40603492500](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40603492500). Python and Rust core jobs also passed; the prior SDK-node and Android jobs were skipped by the phase-specific workflow conditions.
+- The successful integration log verifies the test-only Kenan chain identity/runtime metadata and the `UNIT`/12 display properties, then reconciles genesis issuance exactly across the four upstream development-only accounts.
+- Against the local loopback node, the test finalized an Alice-to-Bob transfer, checked the nonce increment, and matched the sender's balance delta to the finalized `TransactionFeePaid` event. The run observed `759,838,144` base units of fee; this is an ephemeral development-test result, not an approved fee schedule.
+- The same run confirmed development Sudo rejects Bob and permits Alice only for an inert `System.remark` probe. The overlay inherits the official template's development genesis preset and keys; it does not establish a production authority or governance policy.
+- This is a reproducible, test-only identity/runtime slice, not a custom economic Runtime. No issuance, supply, distribution, production fees, governance, or validator policy was approved or changed. The branch remains unmerged; physical-device testing and the closed exchange phase remain separate gates.
+
 ## Phase 4 — Build a closed, test-only Kenan exchange
 
 Build functioning services, not decorative screens. Every screen must be connected to a real test service or clearly marked as unavailable/in development. Do not show fabricated balances, prices, liquidity or successful deposits/withdrawals.
