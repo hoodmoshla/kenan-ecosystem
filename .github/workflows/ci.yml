@@ -65,7 +65,7 @@ jobs:
       - name: Build and test the Kenan Runtime overlay on a local node
         run: |
           set -euo pipefail
-          ./polkadot/kenan-runtime/test-runtime.sh 2>&1 | tee "$RUNNER_TEMP/kenan-runtime-ci.log"
+          bash ./polkadot/kenan-runtime/test-runtime.sh 2>&1 | tee "$RUNNER_TEMP/kenan-runtime-ci.log"
       - name: Upload Kenan Runtime test log
         if: always()
         uses: actions/upload-artifact@v4
