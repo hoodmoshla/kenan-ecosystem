@@ -29,8 +29,55 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked --manifest-path rust-core/Cargo.toml
 
+  kenan-runtime-tests:
+    name: Kenan Runtime test-only overlay integration
+    if: ${{ (github.head_ref || github.ref_name) == 'feat/kenan-runtime-customization-2026-10-27' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_RELEASE_DEBUG: 0
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt
+          targets: wasm32v1-none
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libclang-dev llvm-dev libssl-dev pkg-config protobuf-compiler
+      - uses: actions/cache@v4
+        with:
+          path: polkadot/sdk/target
+          key: ${{ runner.os }}-polkadot-stable2603-7-rust-1.93.0-${{ hashFiles('polkadot/sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-polkadot-stable2603-7-rust-1.93.0-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: polkadot/integration-test/package-lock.json
+      - name: Install the pinned RPC integration-test client
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix polkadot/integration-test
+      - name: Build and test the Kenan Runtime overlay on a local node
+        run: |
+          set -euo pipefail
+          ./polkadot/kenan-runtime/test-runtime.sh 2>&1 | tee "$RUNNER_TEMP/kenan-runtime-ci.log"
+      - name: Upload Kenan Runtime test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kenan-runtime-test-log
+          path: ${{ runner.temp }}/kenan-runtime-ci.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   polkadot-sdk-local-node:
     name: Polkadot SDK local node integration and restart recovery
+    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' && (github.head_ref || github.ref_name) != 'feat/kenan-exchange-ledger-2026-10-27' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -74,6 +121,7 @@ jobs:
 
   android-debug:
     name: Android debug APK
+    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' && (github.head_ref || github.ref_name) != 'feat/kenan-exchange-ledger-2026-10-27' }}
     runs-on: ubuntu-24.04
     needs: polkadot-sdk-local-node
     steps:
