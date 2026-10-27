@@ -61,6 +61,8 @@ for raw_port in sys.argv[1:]:
     if not 1 <= port <= 65535:
         raise SystemExit(f"Invalid local test port: {port}")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        # Permit rebinding after the just-stopped node's closed TCP connections enter TIME_WAIT.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError as error:
