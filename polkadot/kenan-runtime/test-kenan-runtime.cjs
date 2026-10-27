@@ -88,12 +88,13 @@ async function main() {
     assert.equal(runtimeVersion.specName.toString(), 'kenan-test-runtime');
     assert.equal(runtimeVersion.implName.toString(), 'kenan-test-runtime');
 
-    const properties = (await api.rpc.system.properties()).toJSON();
-    const symbol = Array.isArray(properties.tokenSymbol)
-      ? properties.tokenSymbol[0]
-      : properties.tokenSymbol;
+    const properties = await api.rpc.system.properties();
+    assert.ok(properties.tokenSymbol.isSome, 'Chain token symbol was not exposed.');
+    assert.ok(properties.tokenDecimals.isSome, 'Chain token precision was not exposed.');
+    const symbol = properties.tokenSymbol.unwrap()[0]?.toString();
+    const decimals = properties.tokenDecimals.unwrap()[0]?.toNumber();
     assert.equal(symbol, 'UNIT', 'The test chain must expose the upstream template symbol explicitly.');
-    assert.equal(Number(properties.tokenDecimals), 12, 'The test chain must expose the upstream template precision explicitly.');
+    assert.equal(decimals, 12, 'The test chain must expose the upstream template precision explicitly.');
     assert.ok(api.tx.balances?.transferKeepAlive, 'Balances transfer call is missing from runtime metadata.');
     assert.ok(api.tx.sudo?.sudo, 'Sudo call is missing from runtime metadata.');
     assert.ok(api.rpc.payment?.queryInfo, 'Transaction-payment RPC is not registered.');
