@@ -78,7 +78,7 @@ if [[ "${KENAN_RUNTIME_BUILD_ONLY:-0}" == "1" ]]; then
 fi
 BASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kenan-runtime-test.XXXXXX")"
 NODE_LOG="$BASE_DIR/node.log"
-"$NODE_BIN" --chain kenan-dev --base-path "$BASE_DIR/db" \
+"$NODE_BIN" --chain kenan-dev --alice --force-authoring --base-path "$BASE_DIR/db" \
   --rpc-port "$RPC_PORT" --rpc-methods unsafe \
   --listen-addr "/ip4/127.0.0.1/tcp/$P2P_PORT" >"$NODE_LOG" 2>&1 &
 NODE_PID=$!
