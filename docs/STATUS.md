@@ -8,7 +8,7 @@ This status records local verification for the wallet/RPC and DEMO-exchange chan
 - **Rust:** `cargo test --locked --manifest-path rust-core/Cargo.toml` — **2/2 passed**. `rust-core/` remains a small signing/address library, not a blockchain node.
 - **Android:** `:app:testDebugUnitTest` — **15/15 passed**; `:app:lintDebug` — **0 errors, 8 advisory warnings**; `:app:assembleDebug` — passed. The lint warnings are target-SDK/dependency-update suggestions; dependencies were not upgraded blindly across the existing Compose/Kotlin toolchain.
 - **Debug APK:** `android-app/app/build/outputs/apk/debug/app-debug.apk`; package `com.kenan.wallet`, version `0.2.0-devnet` (code 2), **12,639,007 bytes**. APK Signature Scheme v2 verified. SHA-256: `dfc4eef8f99e3bae5578c7eefcf616f0c2ecc3e23dd33fbeec7f2dfc0eb93d97`. It is signed with the standard Android Debug certificate, not a project release key.
-- **CI:** `.github/workflows/ci.yml` runs Python, Rust and Android tests/lint/Debug build and uploads the APK as a 7-day artifact. The branch-specific Actions result must be checked after the Git push.
+- **CI:** `.github/workflows/ci.yml` runs Python, Rust and Android tests/lint/Debug build and uploads the APK as a 7-day artifact. GitHub Actions run [40427266724](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40427266724) completed successfully for commit `521b63d` on `fix/kenan-wallet-rpc-ui-2026-10-27`; Android, Python and Rust jobs all passed.
 
 ## Implemented in this change — development only
 
