@@ -1,44 +1,71 @@
-# KenanWallet on Android — development guide
+# KenanWallet على Android — دليل التطوير
 
-The app is Kotlin/Compose with RTL layout. It supports creation and restoration of the Python-reference 24-word BIP39 wallet, encrypted local storage, live balance reads, receive QR, and locally signed devnet transfers.
+التطبيق Kotlin/Compose بواجهة عربية RTL وإنجليزية LTR. يدعم إنشاء/استعادة محفظة BIP39 من 24 كلمة، وتخزين العبارة مشفّرة محليًا بمفتاح Android Keystore، وقراءة رصيد Python devnet، وQR للاستقبال، وتحويلات KEN موقّعة محليًا. صفحة التداول تتصل بمحرك DEMO الموجود في `backend/` فقط؛ ليست بورصة حقيقية ولا تسوّي التداول على البلوكشين.
 
-## Build and tests
+## البناء والاختبارات
 
-Use Android SDK platform 34, JDK 17 or newer, and the repository Gradle wrapper:
+يتطلب البناء JDK 17 أو أحدث وAndroid SDK Platform 34. شغّل من مجلد التطبيق:
 
 ```bash
 cd android-app
 ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-Debug APK: `app/build/outputs/apk/debug/app-debug.apk`. This is a development APK signed with the standard Debug certificate, not a release artifact. Do not use that certificate for upgrades or distribution.
+إذا لم يكتشف Gradle SDK تلقائيًا، اضبط `ANDROID_HOME` على مسار Android SDK المثبت لديك. APK التجريبي: `app/build/outputs/apk/debug/app-debug.apk`. الإصدار الحالي `0.2.0-devnet`، `versionCode=2`. هذا بناء Debug للاختبار فقط، وليس إصدار إنتاج.
 
-## Connect to the Python devnet
+## المحاكي مقابل الهاتف الحقيقي
 
-Start the node from the repository root:
+- في **Android Emulator** فقط، يمكن للتطبيق استخدام `http://10.0.2.2:8545` تلقائيًا عند عدم وجود إعداد صريح؛ هذا عنوان المحاكي للوصول إلى حاسوب المضيف.
+- على **هاتف فعلي** لا يختار التطبيق هذا العنوان ولا أي IP افتراضي. افتح **الإعدادات** وأدخل عنوان RPC يدويًا. أفرغ الحقل إن أردت إبقاء RPC غير مضبوط. يعرض التطبيق حالة الاتصال ورسالة إعادة المحاولة دون تسريب رسالة تقنية خام.
 
-```bash
-python3 -m blockchain.node_server --host 127.0.0.1 --port 8545 --data data/chain.json
-```
+عنوان RPC وبيانات السوق قابلة للتغيير في الإعدادات، وتُحفظ محليًا في تفضيلات التطبيق. عند ضبط عنوان RPC مثل `http://192.168.1.20:8545` يمكن اشتقاق عنوان الخادم التجريبي من المضيف نفسه والمنفذ `8000`؛ أو أدخل عنوان الخادم يدويًا. لا يحتوي APK على عنوان IP للشبكة المحلية أو أسرار وصول.
 
-The Debug default is `http://10.0.2.2:8545`, the Android Emulator route to the host computer. A different reachable development endpoint can be supplied at build time:
+## ربط هاتف عبر شبكة Wi‑Fi خاصة
 
-```bash
-cd android-app
-./gradlew -PkenanNodeUrl=http://<devnet-host>:8545 :app:assembleDebug
-```
+1. صِل الهاتف والحاسوب إلى شبكة Wi‑Fi محلية موثوقة واحدة، ثم اعرف **عنوان IPv4 الخاص بالحاسوب** (`ipconfig` على Windows، أو `hostname -I` على Linux). لا تستخدم عنوانًا عامًا.
+2. شغّل العقدة على عنوان LAN المحدد، لا على loopback:
 
-HTTP cleartext is permitted only by `src/debug/AndroidManifest.xml`; the base manifest keeps it disabled. Do not point this Debug wallet at a public or untrusted network. A physical-device connection and a release HTTPS node are not verified here. The node defaults to loopback; faucet and empty-block mining are loopback-only unless the operator explicitly configures `KENAN_FAUCET_TOKEN` for a private network.
+   ```bash
+   python3 -m blockchain.node_server --host 192.168.1.20 --port 8545 --data data/chain.json
+   ```
 
-The wallet refuses to sign unless RPC identifies `kenan-devnet-1` and `devnet-test-only`. The transfer flow obtains the fee, balance and nonce from RPC, displays recipient/amount/fee/total, asks for an explicit confirmation, checks nonce/balance again, signs locally, submits once, then fetches the deterministic transaction hash and compares the confirmed fields. It does not automatically retry an ambiguous send.
+   استبدل `192.168.1.20` بعنوان الحاسوب الفعلي. المنفذ الافتراضي `8545`. يبقى الوضع الافتراضي للخادم `127.0.0.1` إذا لم تحدد `--host`، وهو آمن لكنه غير قابل للوصول من الهاتف. يرفض البرنامج عناوين wildcard مثل `0.0.0.0` و`::` والعناوين العامة.
+3. إذا أردت بيانات سوق/أوامر DEMO، شغّل الخادم المحلي على عنوان LAN نفسه:
 
-## Wallet backup and storage
+   ```bash
+   KENAN_NODE_URL=http://192.168.1.20:8545 python3 -m backend.app --host 192.168.1.20 --port 8000
+   ```
 
-- New wallets use 24-word BIP39 English phrases matching `wallet-core/wallet.py`.
-- The phrase is encrypted with AES-GCM; the AES key is generated and kept by Android Keystore. Only ciphertext and the public address are stored in app-private files. Android app backup is disabled so the encrypted file is not restored without its device-bound Keystore key.
-- The phrase is shown to the user at creation and must be written down outside the app. It is never sent to the node. A restored phrase is validated before encrypted storage.
-- Signing decrypts the phrase briefly in-process to derive the compatible Ed25519 key. This is local signing, not hardware-backed Ed25519 signing; the phrase/key can exist in process memory during use. No independent mobile security audit has been performed.
+   يحتفظ هذا الخادم بأرصدة وأوامر DEMO في الذاكرة؛ تُمسح عند إعادة تشغيله. لا مصادقة إنتاجية فيه، لذا اقصره على شبكة خاصة موثوقة فقط.
+4. اسمح في الجدار الناري باتصالات TCP الواردة على `8545` (العقدة) و`8000` (الخادم التجريبي الاختياري) من الشبكة المحلية/الهاتف فقط. على Windows يمكن إنشاء قاعدة لملف Private وLocalSubnet من PowerShell كمسؤول:
 
-## What was and was not tested
+   ```powershell
+   New-NetFirewallRule -DisplayName "Kenan devnet LAN test" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8545,8000 -RemoteAddress LocalSubnet -Profile Private
+   ```
 
-Four JVM unit tests check the 24-word format, known reference address/public key/signature/hash, checksum failures and base-unit conversion. Python integration tests exercise the node’s actual HTTP transfer path. The Debug APK was built and its package/signature checked, but there was no connected emulator or physical device; Keystore behavior, UI interaction with a running node, QR readability and device accessibility remain unverified.
+   على Linux/UFW استخدم نطاق شبكتك الخاص بدل المثال التالي:
+
+   ```bash
+   sudo ufw allow from 192.168.1.0/24 to 192.168.1.20 port 8545 proto tcp
+   sudo ufw allow from 192.168.1.0/24 to 192.168.1.20 port 8000 proto tcp
+   ```
+5. من إعدادات التطبيق، أدخل `http://<عنوان-الحاسوب>:8545` في حقل RPC و`http://<عنوان-الحاسوب>:8000` للخادم التجريبي، ثم احفظ واضغط إعادة المحاولة.
+6. لا تفعّل تحويل منافذ في الراوتر، ولا تعرض RPC أو Backend على الإنترنت العام. يسمح البناء Debug بـHTTP للاختبارات المحلية فقط؛ الـManifest الأساسي يبقي cleartext معطلًا.
+
+عند ربط العقدة بعنوان غير loopback تُقفل عمليتا faucet والتعدين ما لم يضبط المشغّل `KENAN_FAUCET_TOKEN` لخدمة devnet خاصة ويقدّم الرمز في طلب مشغّل من خارج التطبيق. لا تضع هذا الرمز أو أي مفتاح في APK أو إعداد التطبيق. معاملات المحفظة الموقعة وحدها لا تتطلب رمز faucet.
+
+## بيانات السوق والتداول التجريبي
+
+السوق المتاح في التطبيق هو `KEN/USD-DEMO` فقط، من `backend/exchange/engine.py`. دفتر الأوامر والصفقات والأرصدة تُقرأ من واجهات backend؛ يمكن إيداع وحدات DEMO محددة بزر صريح، وتظل منفصلة عن رصيد KEN على السلسلة. تظهر الأسعار والرسم فقط إذا وُجدت صفقات فعلية مسجلة في هذا المحرك؛ لا ينشئ التطبيق أسعارًا أو تاريخًا اصطناعيًا. لا يوجد إيداع/سحب حقيقي أو تسوية للصفقات على الشبكة.
+
+## حماية المحفظة والتحويلات
+
+- بقي `applicationId` واشتقاق BIP39/Ed25519 وتنسيق معاملة Python الحالي كما هي. Android Keystore يحفظ مفتاح AES-GCM غير القابل للتصدير؛ العبارة لا تُرسل إلى العقدة.
+- يستخدم فك التشفير IV المحفوظ داخل ملف المحفظة مع `GCMParameterSpec`؛ لم يتغير إصدار الملف أو AAD أو الاسم المستعار للمفتاح.
+- قبل التوقيع، تعرض شاشة المراجعة المستلم والمبلغ والرسوم والإجمالي. يعيد التطبيق قراءة الرصيد وnonce والرسوم، ويوقع محليًا، ويرسل مرة واحدة، ثم يتحقق من المعاملة بالهاش والحقول. إذا غمضت نتيجة الإرسال لا يعيد التطبيق الإرسال تلقائيًا.
+- لا يحفظ التطبيق دفتر أرصدة محليًا. إخفاء الرصيد تفضيل عرض محلي فقط.
+- العبارة/المفتاح قد يوجدان مؤقتًا في ذاكرة العملية أثناء الاشتقاق والتوقيع؛ لم تُجرَ مراجعة أمنية مستقلة للتطبيق.
+
+## ما لم يُختبر على جهاز
+
+اختبارات Python وRust وAndroid JVM وLint والبناء لا تثبت الوصول الفعلي عبر Wi‑Fi أو قابلية مسح QR أو سلوك Android Keystore على جهاز المستخدم. في بيئة البناء الحالية لم يتصل هاتف أو محاكي ولم تتوفر صورة نظام/محاكي لالتقاط شاشة تشغيل؛ يجب إجراء اختبار LAN وواجهة Android على جهاز فعلي قبل اعتبارها مجربة عليه. لا تستخدم أموالًا حقيقية ولا تعرض هذه النسخة على أنها جاهزة للإنتاج.

@@ -18,6 +18,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from network_utils import validate_bind_host  # noqa: E402
 from blockchain.kenan_chain import Chain, BASE_FEE, UNIT, is_valid_address  # noqa: E402
 
 MAX_BODY_BYTES = 64 * 1024
@@ -158,6 +159,10 @@ def main():
     parser.add_argument("--data", default="data/chain.json")
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
+    try:
+        validate_bind_host(args.host)
+    except ValueError as error:
+        parser.error(f"invalid --host {args.host!r}: {error}")
     os.makedirs(os.path.dirname(args.data) or ".", exist_ok=True)
     chain = Chain(path=args.data)
     try:
