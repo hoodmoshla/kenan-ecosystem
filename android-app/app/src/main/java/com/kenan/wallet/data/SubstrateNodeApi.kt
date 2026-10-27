@@ -607,7 +607,7 @@ class SubstrateNodeApi(private val endpoint: String) {
         private const val RPC_REQUEST_TIMEOUT_SECONDS = 20L
         private const val RPC_FINALITY_TIMEOUT_SECONDS = 90L
         private const val MORTAL_PERIOD = 64
-        private const val TEMPLATE_NODE_NAME = "solochain-template-node"
+        private const val TEMPLATE_NODE_NAME = "Substrate Node"
         private const val TEMPLATE_RUNTIME_NAME = "solochain-template-runtime"
         private const val TEMPLATE_TOKEN_SYMBOL = "UNIT"
         private const val TEMPLATE_TOKEN_DECIMALS = 12
