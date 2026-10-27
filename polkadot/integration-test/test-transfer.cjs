@@ -11,10 +11,12 @@ assert(
   'This integration test is restricted to a local development node.'
 );
 const amount1 = BigInt(process.env.KENAN_TEST_TRANSFER_BASE || '1000000000');
-const amount2 = BigInt(process.env.KENAN_TEST_TRANSFER_SECOND_BASE || '500000000');
+const amount2Override = process.env.KENAN_TEST_TRANSFER_SECOND_BASE
+  ? BigInt(process.env.KENAN_TEST_TRANSFER_SECOND_BASE)
+  : null;
 const amount3 = BigInt(process.env.KENAN_TEST_TRANSFER_THIRD_BASE || '250000000');
 const finalityRpcDelayMs = Number(process.env.KENAN_FINALITY_RPC_DELAY_MS || '2000');
-assert(amount1 > 0n && amount2 > 0n && amount3 > 0n, 'Transfer amounts must be positive integers.');
+assert(amount1 > 0n && (amount2Override === null || amount2Override > 0n) && amount3 > 0n, 'Transfer amounts must be positive integers.');
 assert(Number.isSafeInteger(finalityRpcDelayMs) && finalityRpcDelayMs >= 0, 'Finality RPC delay must be a non-negative integer.');
 
 function bytesToHex(bytes) {
@@ -213,6 +215,10 @@ async function main() {
   try {
     const chain = (await api.rpc.system.chain()).toString();
     const genesisHash = (await api.rpc.chain.getBlockHash(0)).toHex();
+    const existentialDeposit = api.consts.balances.existentialDeposit.toBigInt();
+    const amount2 = amount2Override ?? existentialDeposit + 500_000_000n;
+    assert(amount2 > existentialDeposit, 'Second transfer to the unendowed recipient must exceed the runtime existential deposit.');
+    console.log(`Runtime existential deposit: ${existentialDeposit}; second transfer: ${amount2}`);
     const keyring = new Keyring({ type: 'sr25519' });
     const alice = keyring.addFromUri('//Alice');
     const bob = keyring.addFromUri('//Bob');
@@ -256,6 +262,7 @@ async function main() {
 
     const tx1Hash = first.hash.toHex();
     const firstResult = await submitAndWaitFinalized(api, first);
+    await assertFinalizedTransferEvents(api, tx1Hash, firstResult.finalizedHash);
     const tx1After = await stateAt(api, firstResult.finalizedHash, alice.address);
     const bobAfter1 = await stateAt(api, firstResult.finalizedHash, bob.address);
     const tx1Fee = aliceBefore.free - tx1After.free - amount1;
@@ -297,6 +304,7 @@ async function main() {
       if (delayedApi) await delayedApi.disconnect();
       await delayProxy.close();
     }
+    await assertFinalizedTransferEvents(api, tx2Hash, secondResult.finalizedHash);
     const aliceAfter2 = await stateAt(api, secondResult.finalizedHash, alice.address);
     const bobAfter2 = await stateAt(api, secondResult.finalizedHash, bob.address);
     const charlieAfter2 = await stateAt(api, secondResult.finalizedHash, charlie.address);
@@ -310,6 +318,7 @@ async function main() {
     const third = await signTransfer(api, alice, bob, amount3, nonce3);
     const tx3Hash = third.hash.toHex();
     const thirdResult = await submitAndWaitFinalized(api, third);
+    await assertFinalizedTransferEvents(api, tx3Hash, thirdResult.finalizedHash);
     const aliceAfter3 = await stateAt(api, thirdResult.finalizedHash, alice.address);
     const bobAfter3 = await stateAt(api, thirdResult.finalizedHash, bob.address);
     const charlieAfter3 = await stateAt(api, thirdResult.finalizedHash, charlie.address);
@@ -330,13 +339,6 @@ async function main() {
     const finalizedHeader = await api.rpc.chain.getHeader(finalizedHead);
     const finalizedHeight = BigInt(finalizedHeader.number.toString());
     assert(finalizedHeight > 0n, 'No finalized blocks were observed.');
-    for (const [hash, blockHash] of [
-      [tx1Hash, firstResult.finalizedHash],
-      [tx2Hash, secondResult.finalizedHash],
-      [tx3Hash, thirdResult.finalizedHash],
-    ]) {
-      await assertFinalizedTransferEvents(api, hash, blockHash);
-    }
     const finalizedTransferHeights = await Promise.all([
       firstResult.finalizedHash,
       secondResult.finalizedHash,
@@ -354,6 +356,7 @@ async function main() {
       suite: 'real local Polkadot SDK Solochain integration',
       chain,
       genesisHash,
+      existentialDepositBase: existentialDeposit.toString(),
       finalizedHeight: finalizedHeight.toString(),
       checks: {
         invalidSignatureRejected: true,
