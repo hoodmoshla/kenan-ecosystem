@@ -112,7 +112,7 @@ jobs:
           set -euo pipefail
           node_bin="$GITHUB_WORKSPACE/polkadot/sdk/target/release/solochain-template-node"
           chmod +x "$node_bin"
-          "$node_bin" --dev --tmp --rpc-addr 127.0.0.1 --rpc-port 9944 --rpc-methods unsafe \
+          "$node_bin" --dev --tmp --rpc-port 9944 --rpc-methods unsafe \
             --listen-addr /ip4/127.0.0.1/tcp/30333 >/tmp/kenan-polkadot-node.log 2>&1 &
           node_pid=$!
           trap 'kill "$node_pid" 2>/dev/null || true; wait "$node_pid" 2>/dev/null || true' EXIT
