@@ -243,11 +243,11 @@ class SubstrateNodeApi(private val endpoint: String) {
         val genesisHash = rpcString(session, "chain_getBlockHash", listOf(0))
         val finalizedHash = rpcString(session, "chain_getFinalizedHead")
         val finalizedHeader = session.call("chain_getHeader", listOf(finalizedHash)).asJsonObject
-        val finalizedHeight = parseHexOrDecimal(finalizedHeader.get("number")).longValueExact()
+        val finalizedHeight = parseHexOrDecimal(finalizedHeader.get("number"), "finalized header number").longValueExact()
         val runtimeVersionJson = session.call("state_getRuntimeVersion").asJsonObject
         val specName = runtimeVersionJson.get("specName")?.asString ?: ""
-        val specVersion = parseHexOrDecimal(runtimeVersionJson.get("specVersion")).intValueExact()
-        val transactionVersion = parseHexOrDecimal(runtimeVersionJson.get("transactionVersion")).intValueExact()
+        val specVersion = parseHexOrDecimal(runtimeVersionJson.get("specVersion"), "runtime specVersion").intValueExact()
+        val transactionVersion = parseHexOrDecimal(runtimeVersionJson.get("transactionVersion"), "runtime transactionVersion").intValueExact()
         val properties = session.call("system_properties").asJsonObject
         val officialTemplate = systemName == TEMPLATE_NODE_NAME && specName == TEMPLATE_RUNTIME_NAME
         val tokenSymbol = propertyString(properties.get("tokenSymbol")).ifBlank {
@@ -255,7 +255,7 @@ class SubstrateNodeApi(private val endpoint: String) {
         }
         val tokenDecimalsValue = propertyFirst(properties.get("tokenDecimals"))
         val tokenDecimals = if (tokenDecimalsValue == null && officialTemplate) TEMPLATE_TOKEN_DECIMALS
-        else parseHexOrDecimal(tokenDecimalsValue).intValueExact()
+        else parseHexOrDecimal(tokenDecimalsValue, "system_properties.tokenDecimals").intValueExact()
         require(chainName.isNotBlank() && systemName.isNotBlank() && specName.isNotBlank()) { "Node identity is incomplete" }
         require(genesisHash.matches(Regex("0x[0-9a-fA-F]{64}"))) { "Invalid genesis hash from RPC" }
         require(tokenSymbol.isNotBlank() && tokenDecimals in 0..18) { "Unsupported token properties from RPC" }
@@ -341,7 +341,7 @@ class SubstrateNodeApi(private val endpoint: String) {
 
     private suspend fun queryFee(session: RpcSession, extrinsicHex: String, atHash: String): Long {
         val result = session.call("payment_queryInfo", listOf(normalizeHex(extrinsicHex), atHash)).asJsonObject
-        val partialFee = parseHexOrDecimal(result.get("partialFee")).longValueExact()
+        val partialFee = parseHexOrDecimal(result.get("partialFee"), "payment_queryInfo.partialFee").longValueExact()
         require(partialFee >= 0) { "Runtime returned a negative fee" }
         return partialFee
     }
@@ -370,7 +370,7 @@ class SubstrateNodeApi(private val endpoint: String) {
         val index = (0 until extrinsics.size()).firstOrNull { normalizeHex(extrinsics[it].asString) == expectedExtrinsicHex }
             ?: error("Finalized block does not contain the submitted SCALE extrinsic")
         val header = session.call("chain_getHeader", listOf(finalizedHash)).asJsonObject
-        val blockHeight = parseHexOrDecimal(header.get("number")).longValueExact()
+        val blockHeight = parseHexOrDecimal(header.get("number"), "finalized block header number").longValueExact()
         val phaseEvents = eventsForIndex(eventsAt(session, context, finalizedHash), index)
         require(phaseEvents.any { it.module.name == "System" && it.event.name == "ExtrinsicSuccess" }) {
             "Finalized transfer did not emit System.ExtrinsicSuccess"
@@ -445,9 +445,9 @@ class SubstrateNodeApi(private val endpoint: String) {
         return result.asString
     }
 
-    private fun parseHexOrDecimal(element: JsonElement?): BigInteger {
-        require(element != null && !element.isJsonNull) { "Missing numeric RPC field" }
-        val raw = if (element.isJsonPrimitive) element.asString else error("Numeric RPC field is not primitive")
+    private fun parseHexOrDecimal(element: JsonElement?, fieldName: String): BigInteger {
+        require(element != null && !element.isJsonNull) { "Missing numeric RPC field: $fieldName" }
+        val raw = if (element.isJsonPrimitive) element.asString else error("$fieldName is not a primitive numeric RPC value")
         return if (raw.startsWith("0x", ignoreCase = true)) BigInteger(raw.drop(2), 16) else BigDecimal(raw).toBigIntegerExact()
     }
 
