@@ -1,9 +1,10 @@
-"""HTTP integration tests for the in-memory DEMO exchange endpoints."""
+"""HTTP integration tests for the closed, loopback-only test exchange."""
 import json
 import os
 import sys
 import threading
 import unittest
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -31,90 +32,136 @@ class TestExchangeHttp(unittest.TestCase):
 
     def setUp(self):
         self.previous_engine = app.ENGINE
-        self.previous_audit = app.audit
-        app.ENGINE = Engine()
-        app.audit = lambda event, detail: None
+        self.previous_admin_token = os.environ.get("KENAN_ADMIN_TOKEN")
+        self.engine = Engine(allow_test_funding=True)
+        app.ENGINE = self.engine
 
     def tearDown(self):
         app.ENGINE = self.previous_engine
-        app.audit = self.previous_audit
+        self.engine.close()
+        if self.previous_admin_token is None:
+            os.environ.pop("KENAN_ADMIN_TOKEN", None)
+        else:
+            os.environ["KENAN_ADMIN_TOKEN"] = self.previous_admin_token
 
-    def get_json(self, path):
-        with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
-            self.assertEqual(response.status, 200)
-            return json.loads(response.read().decode("utf-8"))
-
-    def post_json(self, path, payload):
+    def request_json(self, method, path, payload=None, headers=None, expected=200):
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        request_headers = dict(headers or {})
+        if data is not None:
+            request_headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
-            self.base_url + path,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            self.base_url + path, data=data, headers=request_headers, method=method
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            self.assertEqual(response.status, 200)
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                raw = response.read().decode("utf-8")
+                self.assertEqual(response.status, expected)
+                return response.status, json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as error:
+            raw = error.read().decode("utf-8")
+            self.assertEqual(error.code, expected)
+            return error.code, json.loads(raw) if raw else {}
 
-    def assert_demo_only(self, response):
-        self.assertIs(response.get("demo_only"), True)
+    def get_json(self, path, headers=None):
+        return self.request_json("GET", path, headers=headers)[1]
 
-    def test_empty_balance_snapshot_is_demo_only(self):
+    def post_json(self, path, payload, headers=None):
+        return self.request_json("POST", path, payload, headers=headers)[1]
+
+    def test_empty_balance_snapshot_contains_no_fabricated_amounts(self):
         response = self.get_json("/exchange/balances/empty-user")
-        self.assert_demo_only(response)
+        self.assertIs(response["test_only"], True)
         self.assertEqual(response["user"], "empty-user")
         self.assertEqual(response["balances"], {})
+        self.assertIn("not mapped to chain decimals", response["units"])
 
-    def test_deposit_is_demo_only_and_returned_in_snapshot(self):
-        deposited = self.post_json(
-            "/exchange/deposit-demo",
-            {"user": "demo-user", "asset": "USD-DEMO", "amount": 25.5},
-        )
-        self.assert_demo_only(deposited)
-        self.assertEqual(deposited["balances"]["USD-DEMO"], {"free": 25.5, "reserved": 0.0})
+    def test_deposit_and_withdrawal_routes_are_disabled_and_audited(self):
+        for path in ("/exchange/deposit-demo", "/exchange/deposit", "/exchange/withdraw"):
+            status, response = self.request_json("POST", path, {
+                "user": "alice", "asset": "KEN", "amount_units": 100,
+            }, expected=410)
+            self.assertEqual(status, 410)
+            self.assertIn("unavailable", response["error"])
+        self.assertEqual(self.engine.balances_snapshot("alice"), {})
+        self.assertGreaterEqual(len(self.engine.audit_snapshot()), 3)
 
-        snapshot = self.get_json("/exchange/balances/demo-user")
-        self.assert_demo_only(snapshot)
-        self.assertEqual(snapshot["balances"], deposited["balances"])
+    def test_legacy_float_order_fields_and_missing_idempotency_are_rejected(self):
+        status, body = self.request_json("POST", "/exchange/orders", {
+            "user": "seller", "side": "sell", "pair": "KEN/USD", "kind": "limit",
+            "qty": 2.5, "price": 7.25,
+        }, expected=400)
+        self.assertIn("unsupported order fields", body["error"])
+        self.assertEqual(self.engine.orders_snapshot(), [])
+        status, body = self.request_json("POST", "/exchange/orders", {
+            "user": "seller", "side": "sell", "pair": "KEN/USD", "kind": "limit",
+            "qty_units": 1, "price_num": 7, "price_den": 1,
+        }, expected=400)
+        self.assertIn("Idempotency-Key", body["error"])
+        self.assertEqual(self.engine.orders_snapshot(), [])
 
-    def test_order_creation_book_read_and_cancel_are_demo_only(self):
-        deposited = self.post_json(
-            "/exchange/deposit-demo",
-            {"user": "seller", "asset": "KEN", "amount": 3},
-        )
-        self.assert_demo_only(deposited)
+    def test_limit_match_book_trades_and_http_idempotency(self):
+        self.engine.issue_test_fixture("seller", "KEN", 2, "http-fixture-seller-1")
+        self.engine.issue_test_fixture("buyer", "USD", 10, "http-fixture-buyer-01")
+        ask_payload = {
+            "user": "seller", "side": "sell", "pair": "KEN/USD", "kind": "limit",
+            "qty_units": 2, "price_num": 3, "price_den": 2,
+        }
+        ask = self.post_json("/exchange/orders", ask_payload, {"Idempotency-Key": "http-ask-key-001"})
+        self.assertTrue(ask["test_only"])
+        self.assertEqual(ask["order"]["status"], "open")
+        book = self.get_json("/exchange/book?pair=" + urllib.parse.quote("KEN/USD", safe=""))
+        self.assertEqual(book["price_source"], "submitted_limit_orders_only")
+        self.assertEqual(book["asks"], [{"id": ask["order"]["id"], "price": {"num": 3, "den": 2}, "qty_units": 2}])
 
-        created = self.post_json(
-            "/exchange/orders",
-            {
-                "user": "seller",
-                "side": "sell",
-                "pair": "KEN/USD-DEMO",
-                "kind": "limit",
-                "qty": 2,
-                "price": 7.25,
-            },
-        )
-        self.assert_demo_only(created)
-        self.assertEqual(created["status"], "open")
+        bid_payload = {
+            "user": "buyer", "side": "buy", "pair": "KEN/USD", "kind": "limit",
+            "qty_units": 2, "price_num": 2, "price_den": 1,
+        }
+        key = {"Idempotency-Key": "http-bid-key-001"}
+        bid = self.post_json("/exchange/orders", bid_payload, key)
+        self.assertEqual(bid["order"]["status"], "filled")
+        self.assertEqual(len(bid["trades"]), 1)
+        self.assertEqual(bid["trades"][0]["quote_units"], 3)
+        self.assertEqual(bid["trades"][0]["price"], {"num": 3, "den": 2})
+        replay = self.post_json("/exchange/orders", bid_payload, key)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["order"]["id"], bid["order"]["id"])
+        self.assertEqual(len(self.engine.trades_snapshot()), 1)
+        self.assertEqual(self.get_json("/exchange/orders?user=seller")["orders"][0]["status"], "filled")
+        self.assertEqual(len(self.get_json("/exchange/trades?user=buyer")["trades"]), 1)
+        self.assertEqual(self.get_json("/exchange/book?pair=KEN%2FUSD")["asks"], [])
 
-        book = self.get_json("/exchange/book?pair=" + urllib.parse.quote("KEN/USD-DEMO", safe=""))
-        self.assert_demo_only(book)
-        self.assertEqual(book["asks"], [{"id": created["id"], "price": 7.25, "qty": 2.0}])
+    def test_cancel_releases_reservation_once_and_enforces_order_owner(self):
+        self.engine.issue_test_fixture("seller", "KEN", 3, "http-cancel-fixture-1")
+        order = self.post_json("/exchange/orders", {
+            "user": "seller", "side": "sell", "pair": "KEN/USD", "kind": "limit",
+            "qty_units": 2, "price_num": 7, "price_den": 1,
+        }, {"Idempotency-Key": "http-cancel-ask-01"})
+        order_id = order["order"]["id"]
+        status, error = self.request_json("POST", f"/exchange/orders/{order_id}/cancel", {
+            "user": "other-user",
+        }, {"Idempotency-Key": "wrong-owner-cancel-01"}, expected=403)
+        self.assertIn("does not belong", error["error"])
+        cancel_key = {"Idempotency-Key": "http-cancel-key-01"}
+        cancel = self.post_json(f"/exchange/orders/{order_id}/cancel", {"user": "seller"}, cancel_key)
+        replay = self.post_json(f"/exchange/orders/{order_id}/cancel", {"user": "seller"}, cancel_key)
+        self.assertEqual(cancel["order"]["status"], "cancelled")
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(self.engine.balances_snapshot("seller")["KEN"], {
+            "available_units": 3, "reserved_units": 0,
+        })
 
-        orders = self.get_json("/exchange/orders?user=seller")
-        self.assert_demo_only(orders)
-        self.assertEqual([order["id"] for order in orders["orders"]], [created["id"]])
-
-        cancelled = self.post_json(
-            f"/exchange/orders/{created['id']}/cancel",
-            {"user": "seller"},
-        )
-        self.assert_demo_only(cancelled)
-        self.assertEqual(cancelled["status"], "cancelled")
-
-        trades = self.get_json("/exchange/trades")
-        self.assert_demo_only(trades)
-        self.assertEqual(trades["trades"], [])
+    def test_exchange_loopback_guard_and_admin_token(self):
+        self.assertTrue(app.exchange_client_allowed("127.0.0.1"))
+        self.assertTrue(app.exchange_client_allowed("::1"))
+        self.assertFalse(app.exchange_client_allowed("192.168.1.20"))
+        self.assertFalse(app.exchange_client_allowed("0.0.0.0"))
+        os.environ["KENAN_ADMIN_TOKEN"] = "correct-test-token"
+        status, _ = self.request_json("GET", "/admin/status", headers={"X-Admin-Token": "wrong"}, expected=403)
+        self.assertEqual(status, 403)
+        status, response = self.request_json("GET", "/admin/status", headers={"X-Admin-Token": "correct-test-token"})
+        self.assertEqual(status, 200)
+        self.assertEqual(response["open_orders"], 0)
 
 
 if __name__ == "__main__":

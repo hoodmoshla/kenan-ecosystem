@@ -107,6 +107,17 @@ Separate user/admin authentication and permissions; protect sessions; add rate l
 
 **Phase 4 completion gate:** spot order and ledger invariants pass integration, concurrency, idempotency and recovery tests; every user-visible action is backed by a real test service or explicitly unavailable; no real-money operation is enabled.
 
+### Phase 4 implementation status (2026-10-28)
+
+- Work is isolated on `feat/kenan-exchange-ledger-2026-10-27`; the default branch and existing phase branches are unchanged.
+- The in-memory float engine was replaced with a durable SQLite order/trade store and append-only, hash-linked double-entry journals. Every journal balances independently per asset; user available/reserved accounts cannot become negative. Startup/reconciliation checks ledger hashes, active-order reservations, trade fills and exact integer settlement.
+- Amounts are integer ledger units and prices are rational `price_num/price_den` ratios. This is an internal test representation only; no KEN decimal mapping, asset registry, supply or fee policy is selected. Fees remain unconfigured and are not charged.
+- Limit and market buy/sell matching uses price-time priority, exact integer settlement (fractional quote-unit fills are not rounded), partial-fill states, cancellation releases, and atomic idempotency records. Market buys require an explicit quote budget; market remainders do not rest.
+- The backend persists to `data/exchange.sqlite3` (or `KENAN_EXCHANGE_DB`), binds Exchange routes to loopback callers, and records mutation/rejection events in an immutable hash-linked audit table. Admin status remains token-protected.
+- `/exchange/deposit-demo`, `/exchange/deposit`, and `/exchange/withdraw` return unavailable; no exchange funds can be minted via HTTP. Test fixture credits exist only in automated tests, are balanced against a test-fixture clearing account, and are disabled in the backend service. Chain-verified deposits remain a future gate; exchange balances are not Python-devnet or Polkadot-chain balances.
+- Local verification on this branch: `python3 -m unittest discover -s tests -v` — **51/51 passed**; `cargo test --locked --manifest-path rust-core/Cargo.toml` — **2/2 passed**. GitHub CI is pending.
+- This is still a local test service, not a production exchange or a security audit. Phase 4 remains open until final branch CI and its integration/concurrency/recovery gates are verified.
+
 ## Phase 5 — Integrate exchange, SDK chain and wallet
 
 Only after the chain, wallet adapter and exchange test services pass their separate gates:

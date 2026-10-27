@@ -5,6 +5,7 @@ venv/
 data/chain.json
 data/chain.json.tmp
 data/audit.log
+data/exchange.sqlite3*
 rust-core/target/
 android-app/.gradle/
 android-app/app/build/
