@@ -51,6 +51,14 @@ Add runtime/node tests and an actual local-node smoke test proving account/balan
 
 Only after Phase 2 passes:
 
+### Verified wallet integration slice (2026-10-27; hosted CI)
+
+- Feature branch `feat/kenanwallet-polkadot-integration-2026-10-27`, code commit [`8206d054`](https://github.com/hoodmoshla/kenan-ecosystem/commit/8206d054a44f3c789a8cf8f7ffdd54ec47ba6105), passed [GitHub Actions run 40556600981](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40556600981): Rust core tests, Polkadot SDK local-node integration/restart recovery, Python tests, and Android debug APK.
+- The Android CI step passed `:app:testDebugUnitTest`, `:app:lintDebug`, and `:app:assembleDebug`; its live transfer test against the local Solochain node finalized successfully and verified balance/fee/nonce reconciliation and no duplicate after a pre-submit connection failure.
+- The `bad signature` root cause was the mortal-era checkpoint: the app used `height - phase`, while the pinned SDK defines `birth(current) = (max(current, phase) - phase) / period * period + phase`; for period 64, phase 22, the checkpoint is block 22, not genesis block 0. The [official SDK source at the pinned commit](https://github.com/paritytech/polkadot-sdk/blob/cd87d0b95e54c8ffc374334386f3f2b2c7a61f54/substrate/primitives/runtime/src/generic/era.rs) confirms the formula. No key derivation, Ed25519 signature format, V4 extrinsic version, or signed-extension order was changed.
+- Android `BigInteger` narrowing now uses API-26-compatible round-trip checks while still throwing on overflow; boundary and overflow tests pass. CI artifacts retain the full Lint report if future Android checks fail.
+- This is hosted CI evidence only: no physical-device/emulator RPC round trip was performed. The feature branch remains unmerged; this slice is not a release or security sign-off.
+
 - Implement a separate Substrate RPC/client adapter; do not mix it with the Python devnet client or reuse Python transaction encodings.
 - Add an explicit network selector for Python Devnet and Polkadot SDK Local/Testnet. Show the selected network and genesis hash before signing or submission.
 - Use maintained, compatible libraries for SCALE metadata, extrinsic construction/signing and transaction fee, nonce and finality handling. Verify behavior against the pinned node, not assumptions about RPC names or encodings.
