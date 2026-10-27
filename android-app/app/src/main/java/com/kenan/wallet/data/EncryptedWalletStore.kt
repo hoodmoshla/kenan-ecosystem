@@ -10,7 +10,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
-import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
@@ -27,10 +26,7 @@ class EncryptedWalletStore(context: Context) {
         require(envelope.getInt("version") == 1) { "إصدار ملف المحفظة غير مدعوم" }
         val iv = Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)
         val ciphertext = Base64.decode(envelope.getString("ciphertext"), Base64.NO_WRAP)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, keyStoreKey())
-        cipher.updateAAD(AAD)
-        val plaintext = cipher.doFinal(ciphertext)
+        val plaintext = WalletAesGcm.decrypt(keyStoreKey(), iv, ciphertext, AAD)
         try {
             val phrase = String(plaintext, StandardCharsets.UTF_8)
             val identity = WalletCrypto.identity(phrase)
@@ -43,20 +39,28 @@ class EncryptedWalletStore(context: Context) {
         }
     }
 
-    fun saveMnemonic(input: String): PublicWallet {
+    fun saveMnemonic(input: String, allowExistingAddressMatch: Boolean = false): PublicWallet {
         val phrase = WalletCrypto.normalizeAndValidate(input)
         val identity = WalletCrypto.identity(phrase)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, keyStoreKey())
-        cipher.updateAAD(AAD)
+        if (walletFile.exists()) {
+            val existingAddress = try {
+                JSONObject(walletFile.readText(StandardCharsets.UTF_8)).getString("address")
+            } catch (e: Exception) {
+                throw IllegalStateException("ملف المحفظة الحالي غير قابل للتحقق؛ لن يتم استبداله", e)
+            }
+            require(allowExistingAddressMatch && existingAddress == identity.address) {
+                "لا يمكن استبدال محفظة محفوظة؛ الاستعادة مسموحة فقط لعبارة تطابق عنوانها"
+            }
+        }
         val plaintext = phrase.toByteArray(StandardCharsets.UTF_8)
-        val ciphertext = try { cipher.doFinal(plaintext) } finally { plaintext.fill(0) }
+        val sealed = try { WalletAesGcm.encrypt(keyStoreKey(), plaintext, AAD) } finally { plaintext.fill(0) }
         val envelope = JSONObject()
             .put("version", 1)
             .put("address", identity.address)
-            .put("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-            .put("ciphertext", Base64.encodeToString(ciphertext, Base64.NO_WRAP))
-        ciphertext.fill(0)
+            .put("iv", Base64.encodeToString(sealed.iv, Base64.NO_WRAP))
+            .put("ciphertext", Base64.encodeToString(sealed.ciphertext, Base64.NO_WRAP))
+        sealed.iv.fill(0)
+        sealed.ciphertext.fill(0)
         val temp = File(appContext.filesDir, "kenan-wallet-v1.json.tmp")
         FileOutputStream(temp).use { stream ->
             stream.write(envelope.toString().toByteArray(StandardCharsets.UTF_8))
@@ -75,10 +79,7 @@ class EncryptedWalletStore(context: Context) {
         val envelope = JSONObject(walletFile.readText(StandardCharsets.UTF_8))
         val iv = Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)
         val ciphertext = Base64.decode(envelope.getString("ciphertext"), Base64.NO_WRAP)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, keyStoreKey())
-        cipher.updateAAD(AAD)
-        val plaintext = cipher.doFinal(ciphertext)
+        val plaintext = WalletAesGcm.decrypt(keyStoreKey(), iv, ciphertext, AAD)
         try {
             val phrase = String(plaintext, StandardCharsets.UTF_8)
             val tx = WalletCrypto.signTransfer(phrase, to, amountBase, feeBase, nonce)
