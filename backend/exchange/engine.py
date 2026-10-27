@@ -70,6 +70,26 @@ class Engine:
                     "asks": [{"id": o.id, "price": o.price, "qty": o.remaining} for o in sells],
                     "demo_only": True}
 
+    def balances_snapshot(self, user):
+        """Return a detached, lock-consistent view of this user's DEMO balances."""
+        with self._lock:
+            balances = self.balances.get(user, {})
+            return {asset: {"free": values["free"], "reserved": values["reserved"]}
+                    for asset, values in balances.items()}
+
+    def orders_snapshot(self, user=None):
+        """Return detached order records, optionally limited to one user."""
+        with self._lock:
+            return [{"id": order.id, "user": order.user, "side": order.side, "pair": order.pair,
+                     "kind": order.kind, "price": order.price, "qty": order.qty,
+                     "filled": order.filled, "status": order.status}
+                    for order in self.orders if user is None or order.user == user]
+
+    def trades_snapshot(self, limit=100):
+        """Return a detached snapshot of the most recent trades."""
+        with self._lock:
+            return [dict(trade) for trade in self.trades[-limit:]]
+
     def place(self, user, side, pair, kind, qty, price=None):
         try:
             qty = float(qty)
