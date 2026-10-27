@@ -29,6 +29,13 @@ class PolkadotWalletModelsTest {
         assertEquals(pin, PolkadotChainPin.fromJson(pin.toJson()))
     }
 
+    @Test fun signingIdentityAllowsNewFinalizedHeadsButRejectsRuntimeVersionChanges() {
+        assertTrue(identity.sameSigningIdentity(identity.copy(finalizedHash = "0x" + "ef".repeat(32), finalizedHeight = 43)))
+        assertTrue(identity.sameSigningIdentity(identity.copy(genesisHash = identity.genesisHash.uppercase())))
+        assertFalse(identity.sameSigningIdentity(identity.copy(specVersion = identity.specVersion + 1)))
+        assertFalse(identity.sameSigningIdentity(identity.copy(transactionVersion = identity.transactionVersion + 1)))
+    }
+
     @Test fun pendingExtrinsicIsRestoredWithoutChangingItsHashOrBytes() {
         val pending = PolkadotPendingTransfer(
             hash = "0x" + "11".repeat(32),

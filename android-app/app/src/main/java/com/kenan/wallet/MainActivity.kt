@@ -303,7 +303,7 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 val freshIdentity = SubstrateNodeApi(substrateRpcUrl).inspectIdentity()
-                if (!reviewedIdentity.samePinnedIdentity(freshIdentity)) {
+                if (!reviewedIdentity.sameSigningIdentity(freshIdentity)) {
                     polkadotIdentity = freshIdentity
                     settingsError = app.getString(R.string.polkadot_identity_changed)
                     return@launch

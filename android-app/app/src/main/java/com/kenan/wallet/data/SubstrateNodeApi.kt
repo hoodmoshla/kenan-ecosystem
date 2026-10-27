@@ -104,7 +104,7 @@ class SubstrateNodeApi(private val endpoint: String) {
         RpcSession(endpoint).use { session ->
             session.connect()
             val context = readContext(session)
-            require(quote.identity.samePinnedIdentity(context.identity)) {
+            require(quote.identity.sameSigningIdentity(context.identity)) {
                 "Chain identity or asset properties changed; review the transfer again"
             }
             val current = accountAt(session, context, senderAccountId, context.identity.finalizedHash)
@@ -486,11 +486,6 @@ class SubstrateNodeApi(private val endpoint: String) {
 
     private data class EraCheckpoint(val era: Era.Mortal, val checkpointHash: String, val expiresAt: Long)
     private data class GenericEventRecord(val phaseName: String, val phaseValue: Any?, val event: GenericEvent.Instance)
-
-    private fun PolkadotNetworkIdentity.samePinnedIdentity(other: PolkadotNetworkIdentity): Boolean =
-        chainName == other.chainName && systemName == other.systemName &&
-            genesisHash.equals(other.genesisHash, ignoreCase = true) && specName == other.specName &&
-            tokenSymbol == other.tokenSymbol && tokenDecimals == other.tokenDecimals
 
     private inner class RpcSession(private val url: String) : AutoCloseable {
         private val gson = Gson()

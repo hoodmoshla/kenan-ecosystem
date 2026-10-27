@@ -32,6 +32,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("org.bouncycastle:bcprov-jdk18on:1.80.2")
     implementation("com.neovisionaries:nv-websocket-client:2.10")
+    implementation("com.google.code.gson:gson:2.11.0")
     // The wallet uses its own BIP39 implementation; exclude NovaCrypto's GPL-3.0 mnemonic stack.
     implementation("io.github.nova-wallet.substrate-sdk-android:core:2.12.2") {
         exclude(group = "com.github.NovaCrypto", module = "BIP39")

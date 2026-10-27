@@ -16,6 +16,12 @@ data class PolkadotNetworkIdentity(
     val finalizedHeight: Long
 )
 
+fun PolkadotNetworkIdentity.sameSigningIdentity(other: PolkadotNetworkIdentity): Boolean =
+    chainName == other.chainName && systemName == other.systemName &&
+        genesisHash.equals(other.genesisHash, ignoreCase = true) && specName == other.specName &&
+        specVersion == other.specVersion && transactionVersion == other.transactionVersion &&
+        tokenSymbol == other.tokenSymbol && tokenDecimals == other.tokenDecimals
+
 data class PolkadotChainPin(
     val chainName: String,
     val systemName: String,
