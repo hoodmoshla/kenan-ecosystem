@@ -7,7 +7,7 @@ This note records the official sources used to select a local test-only SDK base
 - The latest final stable release visible on the official release page during this work is `polkadot-stable2603-7`, based on the `stable2603` release line and also tagged `polkadot-v1.22.7`: [official release page](https://github.com/paritytech/polkadot-sdk/releases/tag/polkadot-stable2603-7).
 - That release reports Rust Stable `1.93.0` as the toolchain used to build and test its crates and node binaries. This is a tested toolchain, not a guarantee that another compiler version will work.
 - The `polkadot-stable2609-rc1` and `rc2` entries on the [official releases page](https://github.com/paritytech/polkadot-sdk/releases) are explicitly pre-releases. They are not selected as the default evaluation baseline.
-- The official SDK tag resolved to commit `cd87d0b95e54c8ffc374334386f3f2b2c7a61f54` when checked. The local environment has Rust `1.97.1`, not `1.93.0`; a reproducible build should pin/install the release-tested toolchain rather than silently rely on the newer local default.
+- The official SDK tag resolved to commit `cd87d0b95e54c8ffc374334386f3f2b2c7a61f54` when checked. The sandbox default was Rust `1.97.1`, so Rust `1.93.0` was installed explicitly and used for the successful locked release build recorded below.
 
 ## Official template and workspace facts
 
@@ -19,7 +19,7 @@ This note records the official sources used to select a local test-only SDK base
 ## Build environment
 
 - The official [SDK installation guide](https://docs.polkadot.com/parachains/install-polkadot-sdk/) describes Linux compiler/linker and OpenSSL prerequisites. Its hardware guidance recommends 16 GB RAM and at least 10 GB available storage for development; current workspace resources are finite and must be checked before a full node build.
-- The current sandbox has 23 GiB total memory, about 9.9 GiB available at the last check, 15 GiB free disk, and Rust 1.97.1 installed. No claim is made that a full optimized SDK build succeeded until its actual build and local-node smoke test pass.
+- The actual build ran on Ubuntu 24.04.4 with 23 GiB RAM and Rust `1.93.0`; its locked release build completed successfully in 26m 21s. In this environment the build needed `libclang-dev`, `llvm-dev`, `cmake`, and `protobuf-compiler` in addition to C/C++ build tools and OpenSSL development files. The temporary source/build tree reached 5.7 GiB; after the real-node smoke test it was deleted, leaving the pinned 236 MiB submodule source in the repository and restoring 7.1 GiB free. Disk space was briefly down to 1.4 GiB, so check capacity before repeating a full build.
 
 ## Policy boundary
 
