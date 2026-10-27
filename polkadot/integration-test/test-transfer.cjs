@@ -143,28 +143,20 @@ async function submitAndWaitFinalized(api, extrinsic) {
     }, 120_000);
 
     api.rpc.author
-      .submitAndWatchExtrinsic(extrinsic, (result) => {
-        if (result.status.isInBlock) inBlockHash = result.status.asInBlock.toHex();
-        if (result.dispatchError) {
+      .submitAndWatchExtrinsic(extrinsic, (status) => {
+        if (status.isInBlock) inBlockHash = status.asInBlock.toHex();
+        if (status.isInvalid || status.isDropped || status.isUsurped) {
           if (!settled) {
             settled = true;
             clearTimeout(timeout);
-            reject(new Error(`Extrinsic dispatch failed: ${errorText(result.dispatchError)}`));
+            reject(new Error(`Extrinsic was ${status.type}: ${status.toString()}`));
           }
           return;
         }
-        if (result.status.isInvalid || result.status.isDropped || result.status.isUsurped) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            reject(new Error(`Extrinsic was ${result.status.type}: ${result.status.toString()}`));
-          }
-          return;
-        }
-        if (result.status.isFinalized && !settled) {
+        if (status.isFinalized && !settled) {
           settled = true;
           finalizedCallbacks += 1;
-          const hash = result.status.asFinalized.toHex();
+          const hash = status.asFinalized.toHex();
           clearTimeout(timeout);
           resolve(hash);
         }
