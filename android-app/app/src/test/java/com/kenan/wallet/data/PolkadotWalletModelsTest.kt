@@ -21,6 +21,16 @@ class PolkadotWalletModelsTest {
         finalizedHeight = 42
     )
 
+    @Test fun mortalEraBirthMatchesSdkPhaseSemantics() {
+        assertEquals(22L, substrateMortalEraBirthBlock(22, 64, 22))
+        assertEquals(22L, substrateMortalEraBirthBlock(42, 64, 22))
+        assertEquals(86L, substrateMortalEraBirthBlock(86, 64, 22))
+    }
+
+    @Test fun mortalEraBirthRespectsSdkPhaseQuantizationForLongPeriods() {
+        assertEquals(5_000L, substrateMortalEraBirthBlock(5_001, 8_192, 5_000))
+    }
+
     @Test fun chainPinMatchesOnlyTheExpectedGenesisAndAssetIdentity() {
         val pin = PolkadotChainPin.from(identity)
         assertTrue(pin.matches(identity.copy(finalizedHeight = 44)))

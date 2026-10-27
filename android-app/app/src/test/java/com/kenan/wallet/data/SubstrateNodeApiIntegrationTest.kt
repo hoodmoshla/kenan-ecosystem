@@ -59,14 +59,8 @@ class SubstrateNodeApiIntegrationTest {
         assertEquals(before.nonce, api.account(senderId).nonce)
 
         var pending: PolkadotPendingTransfer? = null
-        val finalized = try {
-            api.sendTransfer(senderId, recipientId, quote, signer(testMnemonic)) {
-                pending = it
-                println("SUBSTRATE_TEST_DIAG extrinsic=${it.extrinsicHex} nonce=${it.nonce} expiresAt=${it.expiresAtHeight}")
-            }
-        } catch (error: Exception) {
-            println("SUBSTRATE_TEST_DIAG submissionError=${error.message}")
-            throw error
+        val finalized = api.sendTransfer(senderId, recipientId, quote, signer(testMnemonic)) {
+            pending = it
         }
         assertNotNull("the exact signed extrinsic must be persisted before submission", pending)
         assertEquals(finalized.hash, pending!!.hash)
@@ -93,13 +87,10 @@ class SubstrateNodeApiIntegrationTest {
             val payload = inheritedImplication.signingPayload()
             return try {
                 val signature = WalletCrypto.signSubstratePayload(mnemonic, payload, accountId)
-                println("SUBSTRATE_TEST_DIAG accountId=0x${accountId.toTestHex()} payload=0x${payload.toTestHex()} signature=0x${signature.toTestHex()}")
                 SignatureWrapper.Ed25519(signature)
             } finally {
                 payload.fill(0)
             }
         }
     }
-
-    private fun ByteArray.toTestHex(): String = joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }

@@ -2,6 +2,16 @@ package com.kenan.wallet.data
 
 import org.json.JSONObject
 
+internal fun substrateMortalEraBirthBlock(currentHeight: Long, period: Int, phase: Int): Long {
+    require(currentHeight >= 0L)
+    require(period > 0)
+    require(phase in 0 until period)
+
+    val eraPhase = phase.toLong()
+    val eraPeriod = period.toLong()
+    return ((maxOf(currentHeight, eraPhase) - eraPhase) / eraPeriod) * eraPeriod + eraPhase
+}
+
 data class PolkadotNetworkIdentity(
     val chainName: String,
     val systemName: String,

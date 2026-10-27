@@ -303,9 +303,9 @@ class SubstrateNodeApi(private val endpoint: String) {
     private fun eraCheckpoint(session: RpcSession, currentHeight: Long): EraCheckpoint {
         val height = currentHeight.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val (period, phase) = Era.getPeriodPhaseFromBlockPeriod(height, MORTAL_PERIOD)
-        val birthBlock = (height - phase).coerceAtLeast(0)
+        val birthBlock = substrateMortalEraBirthBlock(height.toLong(), period, phase)
         val checkpointHash = rpcString(session, "chain_getBlockHash", listOf(birthBlock))
-        return EraCheckpoint(Era.Mortal(period, phase), normalizeHex(checkpointHash), birthBlock.toLong() + period)
+        return EraCheckpoint(Era.Mortal(period, phase), normalizeHex(checkpointHash), birthBlock + period)
     }
 
     private suspend fun buildTransfer(
