@@ -6,6 +6,10 @@
 
 يستخدم النموذج الحالي الرمز `KEN` و9 منازل عشرية ومعرّف الشبكة `kenan-devnet-1`. يحتوي Genesis الاختباري على 100,000,000 KEN في حساب محصّل الرسوم التجريبي. رسم التحويل ثابت عند `0.001 KEN`؛ يُحرق نصفه ويذهب النصف الآخر إلى محصّل الرسوم. هذه أرقام تشغيلية في شبكة Python الحالية وليست قرارات معتمدة لاقتصاد Polkadot SDK أو mainnet.
 
+## ما كشفه قالب Polkadot SDK المثبّت — ليس قرارًا لـKenan
+
+يعرّف Runtime القالب وحدة `UNIT = 10^12` ووحدة وجود دنيا `1,000,000,000` من أصغر الوحدات. لكن chain spec الرسمية لا تضيف `properties`، وRPC `system_properties` يعيد خصائص chain spec فقط؛ لذلك قد تكون نتيجة RPC فارغة. يستخدم adapter المحفظة `UNIT` و12 منزلة كقيمة عرض احتياطية **فقط** عندما تطابق هوية العقدة اسم node وRuntime الرسميين حرفيًا، ويعرض السلسلة على أنها قالب تطوير. هذا توافق مع القالب وليس اعتمادًا لرمز KEN أو دقته أو حدوده. المصادر مثبتة على revision `cd87d0b`: [ثوابت Runtime](https://github.com/paritytech/polkadot-sdk/blob/cd87d0b/templates/solochain/runtime/src/lib.rs#L101-L107)، [chain spec](https://github.com/paritytech/polkadot-sdk/blob/cd87d0b/templates/solochain/node/src/chain_spec.rs#L7-L16)، [RPC system_properties](https://github.com/paritytech/polkadot-sdk/blob/cd87d0b/substrate/client/rpc/src/system/mod.rs#L96-L98) و[اختبار SDK للخصائص الفارغة](https://github.com/paritytech/polkadot-sdk/blob/cd87d0b/substrate/client/rpc/src/system/tests.rs#L173-L180).
+
 ## القرارات المفتوحة والخيارات
 
 | القرار | الخيارات الممكنة | الأثر الذي يجب تقييمه | الحالة الحالية |
