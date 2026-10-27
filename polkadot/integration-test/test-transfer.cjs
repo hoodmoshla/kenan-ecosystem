@@ -234,7 +234,7 @@ async function main() {
     const first = await signTransfer(api, alice, bob, amount1, nonceBefore);
     const firstRaw = first.toHex();
     const fullBytes = first.toU8a();
-    const signatureBytes = first.signature.signature.toU8a();
+    const signatureBytes = first.signature.toU8a();
     const signatureOffset = findBytes(fullBytes, signatureBytes);
     assert(signatureOffset >= 0, 'Could not locate the signed Sr25519 signature in the encoded extrinsic.');
     const badSignature = Uint8Array.from(fullBytes);
