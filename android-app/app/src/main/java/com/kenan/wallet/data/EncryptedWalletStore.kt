@@ -18,7 +18,11 @@ class EncryptedWalletStore(context: Context) {
     private val appContext = context.applicationContext
     private val walletFile = File(appContext.filesDir, "kenan-wallet-v1.json")
 
-    data class PublicWallet(val address: String, val publicKeyHex: String)
+    data class PublicWallet(
+        val address: String,
+        val publicKeyHex: String,
+        val substrateAddress: String = SubstrateAddressCodec.fromPublicKeyHex(publicKeyHex)
+    )
 
     fun loadWallet(): PublicWallet? {
         if (!walletFile.exists()) return null
@@ -85,6 +89,30 @@ class EncryptedWalletStore(context: Context) {
             val tx = WalletCrypto.signTransfer(phrase, to, amountBase, feeBase, nonce)
             require(tx.from == envelope.getString("address")) { "عنوان المحفظة لا يطابق المفتاح المحلي" }
             return tx
+        } finally {
+            plaintext.fill(0)
+            iv.fill(0)
+            ciphertext.fill(0)
+        }
+    }
+
+    /** Decrypts only in-process and signs an SDK-generated Substrate payload with the existing Ed25519 key. */
+    fun signSubstratePayload(payload: ByteArray, expectedAccountId: ByteArray): ByteArray {
+        val envelope = JSONObject(walletFile.readText(StandardCharsets.UTF_8))
+        val iv = Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)
+        val ciphertext = Base64.decode(envelope.getString("ciphertext"), Base64.NO_WRAP)
+        val plaintext = WalletAesGcm.decrypt(keyStoreKey(), iv, ciphertext, AAD)
+        try {
+            val phrase = String(plaintext, StandardCharsets.UTF_8)
+            val identity = WalletCrypto.identity(phrase)
+            require(identity.address == envelope.getString("address")) { "عنوان المحفظة لا يطابق المفتاح المحلي" }
+            val expectedPublicKey = SubstrateAddressCodec.accountIdFromPublicKeyHex(identity.publicKeyHex)
+            try {
+                require(expectedPublicKey.contentEquals(expectedAccountId)) { "Substrate AccountId لا يطابق المحفظة المحلية" }
+                return WalletCrypto.signSubstratePayload(phrase, payload, expectedAccountId)
+            } finally {
+                expectedPublicKey.fill(0)
+            }
         } finally {
             plaintext.fill(0)
             iv.fill(0)

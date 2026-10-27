@@ -47,6 +47,10 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.kenan.wallet.data.*
+import io.novasama.substrate_sdk_android.encrypt.SignatureWrapper
+import io.novasama.substrate_sdk_android.runtime.extrinsic.v5.transactionExtension.InheritedImplication
+import io.novasama.substrate_sdk_android.runtime.extrinsic.v5.transactionExtension.extensions.verifySignature.GeneralTransactionSigner
+import io.novasama.substrate_sdk_android.runtime.extrinsic.v5.transactionExtension.signingPayload
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -111,6 +115,23 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var quote by mutableStateOf<TransferQuote?>(null)
         private set
+    var polkadotQuote by mutableStateOf<PolkadotTransferQuote?>(null)
+        private set
+    var selectedNetwork by mutableStateOf(
+        settings.getString("selected_network", NETWORK_PYTHON)
+            ?.takeIf { it == NETWORK_PYTHON || it == NETWORK_POLKADOT } ?: NETWORK_PYTHON
+    )
+        private set
+    var substrateRpcUrl by mutableStateOf(
+        SubstrateRpcEndpointConfig.resolve("", settings.getString("substrate_rpc_url", null), emulator).orEmpty()
+    )
+        private set
+    var polkadotIdentity by mutableStateOf<PolkadotNetworkIdentity?>(null)
+        private set
+    var polkadotChainPin by mutableStateOf(PolkadotChainPin.fromJson(settings.getString("polkadot_chain_pin", null)))
+        private set
+    var polkadotPending by mutableStateOf(PolkadotPendingTransfer.fromJson(settings.getString("polkadot_pending_transfer", null)))
+        private set
     var sendError by mutableStateOf<String?>(null)
         private set
     var sendResult by mutableStateOf<String?>(null)
@@ -134,6 +155,12 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var balanceVisible by mutableStateOf(settings.getBoolean("balance_visible", true))
         private set
+    val isPolkadotSelected: Boolean get() = selectedNetwork == NETWORK_POLKADOT
+    val isPolkadotTrusted: Boolean get() = polkadotIdentity?.let { polkadotChainPin?.matches(it) } == true
+    val currentAddress: String get() = wallet?.let { if (isPolkadotSelected) it.substrateAddress else it.address }.orEmpty()
+    val currentRpcEndpoint: String get() = if (isPolkadotSelected) substrateRpcUrl else rpcUrl
+    val currentTokenSymbol: String get() = if (isPolkadotSelected) polkadotIdentity?.tokenSymbol ?: "UNIT" else "KEN"
+    val currentTokenDecimals: Int get() = if (isPolkadotSelected) polkadotIdentity?.tokenDecimals ?: 12 else KEN_DECIMALS
     var demoSnapshot by mutableStateOf<DemoMarketSnapshot?>(null)
         private set
     var demoLoading by mutableStateOf(false)
@@ -160,6 +187,8 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         balanceVisible = !balanceVisible
         settings.edit().putBoolean("balance_visible", balanceVisible).apply()
     }
+
+    fun formatCurrentAmount(baseUnits: Long): String = WalletCrypto.formatAmount(baseUnits, currentTokenDecimals)
 
     fun saveMnemonic(phrase: String, allowExistingAddressMatch: Boolean = false) {
         if (busy) return
@@ -206,8 +235,103 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun selectNetwork(network: String) {
+        if (network != NETWORK_PYTHON && network != NETWORK_POLKADOT) return
+        if (selectedNetwork == network) return
+        selectedNetwork = network
+        settings.edit().putString("selected_network", network).apply()
+        quote = null
+        polkadotQuote = null
+        sendError = null
+        sendResult = null
+        refresh()
+    }
+
+    fun saveSubstrateRpc(input: String) {
+        settingsError = null
+        settingsMessage = null
+        try {
+            val normalized = if (input.isBlank()) "" else SubstrateRpcEndpointConfig.validate(input, emulator)
+            if (normalized != substrateRpcUrl) polkadotIdentity = null
+            substrateRpcUrl = normalized
+            settings.edit().putString("substrate_rpc_url", normalized).apply()
+            settingsMessage = app.getString(R.string.settings_saved)
+            refresh()
+        } catch (_: IllegalArgumentException) {
+            settingsError = app.getString(R.string.substrate_rpc_invalid)
+        }
+    }
+
+    fun inspectCurrentPolkadotNetwork() {
+        if (substrateRpcUrl.isBlank()) {
+            settingsError = app.getString(R.string.rpc_unconfigured)
+            return
+        }
+        if (busy) return
+        busy = true
+        settingsError = null
+        settingsMessage = null
+        viewModelScope.launch {
+            try {
+                val identity = SubstrateNodeApi(substrateRpcUrl).inspectIdentity()
+                polkadotIdentity = identity
+                settingsMessage = app.getString(R.string.polkadot_identity_reviewed)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                settingsError = friendlyRpcError(error)
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun trustCurrentPolkadotNetwork() {
+        val reviewedIdentity = polkadotIdentity
+        if (substrateRpcUrl.isBlank()) {
+            settingsError = app.getString(R.string.rpc_unconfigured)
+            return
+        }
+        if (reviewedIdentity == null) {
+            settingsError = app.getString(R.string.polkadot_review_first)
+            return
+        }
+        if (busy) return
+        busy = true
+        settingsError = null
+        settingsMessage = null
+        viewModelScope.launch {
+            try {
+                val freshIdentity = SubstrateNodeApi(substrateRpcUrl).inspectIdentity()
+                if (!reviewedIdentity.samePinnedIdentity(freshIdentity)) {
+                    polkadotIdentity = freshIdentity
+                    settingsError = app.getString(R.string.polkadot_identity_changed)
+                    return@launch
+                }
+                val pin = PolkadotChainPin.from(freshIdentity)
+                check(settings.edit().putString("polkadot_chain_pin", pin.toJson()).commit()) {
+                    "Could not save the trusted chain identity"
+                }
+                polkadotIdentity = freshIdentity
+                polkadotChainPin = pin
+                settingsMessage = app.getString(R.string.polkadot_network_trusted)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                settingsError = friendlyRpcError(error)
+            } finally {
+                busy = false
+            }
+            refresh()
+        }
+    }
+
     fun refresh() {
         val current = wallet ?: return
+        if (isPolkadotSelected) {
+            refreshPolkadot(current)
+            return
+        }
         val endpoint = rpcUrl
         if (endpoint.isBlank()) {
             account = UiState.Err(app.getString(R.string.rpc_unconfigured))
@@ -247,6 +371,95 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
                 historyUnavailable = false
             }
         }
+    }
+
+    private fun refreshPolkadot(current: EncryptedWalletStore.PublicWallet) {
+        val endpoint = substrateRpcUrl
+        if (endpoint.isBlank()) {
+            account = UiState.Err(app.getString(R.string.rpc_unconfigured))
+            chain = UiState.Err(app.getString(R.string.rpc_unconfigured))
+            recentTransactions = emptyList()
+            historyUnavailable = false
+            return
+        }
+        account = UiState.Loading
+        chain = UiState.Loading
+        recentTransactions = emptyList()
+        historyUnavailable = false
+        viewModelScope.launch {
+            try {
+                val api = SubstrateNodeApi(endpoint)
+                val identity = api.inspectIdentity()
+                polkadotIdentity = identity
+                val pendingJson = settings.getString("polkadot_pending_transfer", null)
+                val pending = PolkadotPendingTransfer.fromJson(pendingJson)
+                polkadotPending = pending
+                if (pendingJson != null && pending == null) {
+                    sendError = app.getString(R.string.polkadot_pending_corrupt)
+                }
+                if (pending != null) {
+                    when (val resolution = api.resolvePending(pending)) {
+                        is PolkadotPendingResolution.Finalized -> {
+                            persistPolkadotPending(null)
+                            sendResult = app.getString(
+                                R.string.polkadot_transfer_confirmed,
+                                resolution.transaction.hash,
+                                resolution.transaction.blockHeight
+                            )
+                        }
+                        PolkadotPendingResolution.Rejected -> {
+                            persistPolkadotPending(null)
+                            sendError = app.getString(R.string.polkadot_transfer_rejected)
+                        }
+                        PolkadotPendingResolution.ExpiredNotIncluded -> {
+                            persistPolkadotPending(null)
+                            sendError = app.getString(R.string.polkadot_transfer_expired)
+                        }
+                        PolkadotPendingResolution.StillPending -> {
+                            sendError = app.getString(R.string.polkadot_transfer_still_pending, pending.hash)
+                        }
+                        PolkadotPendingResolution.Unknown -> {
+                            sendError = app.getString(R.string.polkadot_transfer_unknown, pending.hash)
+                        }
+                    }
+                }
+                val accountId = SubstrateAddressCodec.accountIdFromPublicKeyHex(current.publicKeyHex)
+                val state = api.account(accountId)
+                account = UiState.Ok(
+                    AccountState(current.substrateAddress, state.freeBalanceBase, state.nonce, identity.chainName)
+                )
+                chain = UiState.Ok(
+                    ChainInfo(identity.genesisHash.take(14), identity.finalizedHeight, 0L, 0L, identity.chainName)
+                )
+                try {
+                    recentTransactions = api.recentTransactions(accountId, 20).map { tx ->
+                        ChainTransaction(tx.hash, "finalized", tx.blockHeight, tx.from, tx.to, tx.amountBase)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    recentTransactions = emptyList()
+                    historyUnavailable = true
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val message = friendlyRpcError(error)
+                account = UiState.Err(message)
+                chain = UiState.Err(message)
+                recentTransactions = emptyList()
+                historyUnavailable = false
+            }
+        }
+    }
+
+    private fun persistPolkadotPending(pending: PolkadotPendingTransfer?) {
+        if (pending == null) {
+            settings.edit().remove("polkadot_pending_transfer").apply()
+        } else {
+            settings.edit().putString("polkadot_pending_transfer", pending.toJson()).apply()
+        }
+        polkadotPending = pending
     }
 
     fun refreshDemoExchange() {
@@ -337,6 +550,10 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun prepareTransfer(recipientInput: String, amountInput: String) {
+        if (isPolkadotSelected) {
+            preparePolkadotTransfer(recipientInput, amountInput)
+            return
+        }
         val current = wallet ?: run { sendError = app.getString(R.string.setup_title); return }
         val recipient = recipientInput.trim()
         if (!WalletCrypto.isValidAddress(recipient)) {
@@ -389,11 +606,95 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun preparePolkadotTransfer(recipientInput: String, amountInput: String) {
+        val current = wallet ?: run { sendError = app.getString(R.string.setup_title); return }
+        val pendingJson = settings.getString("polkadot_pending_transfer", null)
+        val pending = PolkadotPendingTransfer.fromJson(pendingJson)
+        if (pendingJson != null && pending == null) {
+            sendError = app.getString(R.string.polkadot_pending_corrupt)
+            return
+        }
+        if (pending != null) {
+            polkadotPending = pending
+            sendError = app.getString(R.string.polkadot_transfer_unknown, pending.hash)
+            return
+        }
+        val identity = polkadotIdentity
+        if (identity == null || polkadotChainPin?.matches(identity) != true) {
+            sendError = app.getString(R.string.polkadot_trust_required)
+            return
+        }
+        val recipient = recipientInput.trim()
+        val recipientId = try {
+            SubstrateAddressCodec.accountId(recipient)
+        } catch (_: Exception) {
+            sendError = app.getString(R.string.polkadot_invalid_address)
+            return
+        }
+        val senderId = SubstrateAddressCodec.accountIdFromPublicKeyHex(current.publicKeyHex)
+        if (recipientId.contentEquals(senderId)) {
+            sendError = app.getString(R.string.error_same_address)
+            return
+        }
+        val amount = try {
+            WalletCrypto.parseAmount(amountInput, identity.tokenDecimals)
+        } catch (_: Exception) {
+            sendError = app.getString(R.string.polkadot_invalid_amount, identity.tokenDecimals)
+            return
+        }
+        if (substrateRpcUrl.isBlank()) {
+            sendError = app.getString(R.string.rpc_unconfigured)
+            return
+        }
+        sendError = null
+        sendResult = null
+        quote = null
+        polkadotQuote = null
+        busy = true
+        viewModelScope.launch {
+            try {
+                val reviewed = SubstrateNodeApi(substrateRpcUrl).quoteTransfer(
+                    senderId,
+                    recipientId,
+                    recipient,
+                    amount
+                )
+                require(polkadotChainPin?.matches(reviewed.identity) == true) {
+                    app.getString(R.string.polkadot_identity_changed)
+                }
+                require(reviewed.amountBase <= Long.MAX_VALUE - reviewed.feeBase &&
+                    reviewed.balanceBase >= reviewed.amountBase + reviewed.feeBase) {
+                    app.getString(R.string.error_insufficient_balance)
+                }
+                polkadotIdentity = reviewed.identity
+                polkadotQuote = reviewed
+                account = UiState.Ok(
+                    AccountState(current.substrateAddress, reviewed.balanceBase, reviewed.nonce, reviewed.identity.chainName)
+                )
+                chain = UiState.Ok(
+                    ChainInfo(reviewed.identity.genesisHash.take(14), reviewed.identity.finalizedHeight, 0L, 0L, reviewed.identity.chainName)
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                sendError = if (error is IllegalArgumentException) friendlyPolkadotTransferError(error)
+                else friendlyRpcError(error)
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     fun cancelQuote() {
         quote = null
+        polkadotQuote = null
     }
 
     fun confirmTransfer() {
+        if (isPolkadotSelected) {
+            confirmPolkadotTransfer()
+            return
+        }
         val current = wallet ?: return
         val reviewed = quote ?: return
         if (busy || rpcUrl.isBlank()) return
@@ -458,6 +759,96 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun confirmPolkadotTransfer() {
+        val current = wallet ?: return
+        val reviewed = polkadotQuote ?: return
+        if (busy || substrateRpcUrl.isBlank()) return
+        if (polkadotChainPin?.matches(reviewed.identity) != true) {
+            sendError = app.getString(R.string.polkadot_identity_changed)
+            polkadotQuote = null
+            return
+        }
+        val existingPendingJson = settings.getString("polkadot_pending_transfer", null)
+        val existingPending = PolkadotPendingTransfer.fromJson(existingPendingJson)
+        if (existingPendingJson != null && existingPending == null) {
+            sendError = app.getString(R.string.polkadot_pending_corrupt)
+            polkadotQuote = null
+            return
+        }
+        if (existingPending != null) {
+            polkadotPending = existingPending
+            sendError = app.getString(R.string.polkadot_transfer_unknown, existingPending.hash)
+            polkadotQuote = null
+            refresh()
+            return
+        }
+        busy = true
+        sendError = null
+        sendResult = null
+        viewModelScope.launch {
+            try {
+                val senderId = SubstrateAddressCodec.accountIdFromPublicKeyHex(current.publicKeyHex)
+                val recipientId = SubstrateAddressCodec.accountId(reviewed.recipient)
+                val signer = object : GeneralTransactionSigner {
+                    override suspend fun signInheritedImplication(
+                        inheritedImplication: InheritedImplication,
+                        accountId: ByteArray
+                    ): SignatureWrapper {
+                        val payload = inheritedImplication.signingPayload()
+                        return try {
+                            SignatureWrapper.Ed25519(store.signSubstratePayload(payload, accountId))
+                        } finally {
+                            payload.fill(0)
+                        }
+                    }
+                }
+                val transaction = SubstrateNodeApi(substrateRpcUrl).sendTransfer(
+                    senderId,
+                    recipientId,
+                    reviewed,
+                    signer
+                ) { pending ->
+                    check(settings.edit().putString("polkadot_pending_transfer", pending.toJson()).commit()) {
+                        "Could not persist the signed transaction before submission"
+                    }
+                }
+                persistPolkadotPending(null)
+                polkadotQuote = null
+                sendResult = app.getString(
+                    R.string.polkadot_transfer_confirmed,
+                    transaction.hash,
+                    transaction.blockHeight
+                )
+                refresh()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                polkadotQuote = null
+                if (error is SubstrateNodeApi.SubstrateNotSubmittedException ||
+                    error is SubstrateNodeApi.SubstrateRejectedException
+                ) {
+                    settings.edit().remove("polkadot_pending_transfer").commit()
+                    polkadotPending = null
+                }
+                val pending = PolkadotPendingTransfer.fromJson(settings.getString("polkadot_pending_transfer", null))
+                polkadotPending = pending
+                sendError = when {
+                    error is SubstrateNodeApi.SubstrateAmbiguousSubmissionException ->
+                        app.getString(R.string.polkadot_transfer_unknown, error.txHash)
+                    error is SubstrateNodeApi.SubstrateRejectedException ->
+                        app.getString(R.string.polkadot_transfer_rejected)
+                    error is SubstrateNodeApi.SubstrateNotSubmittedException -> friendlyRpcError(error)
+                    error is IllegalArgumentException -> friendlyPolkadotTransferError(error)
+                    pending != null -> app.getString(R.string.polkadot_transfer_unknown, pending.hash)
+                    else -> friendlyRpcError(error)
+                }
+                if (pending != null) refresh()
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     private fun verifyDevnet(info: ChainInfo) {
         require(info.chainId == DEVNET_CHAIN_ID && info.network == "devnet-test-only") {
             app.getString(R.string.error_wrong_network)
@@ -467,8 +858,20 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
     private fun friendlyRpcError(error: Exception): String = when (error) {
         is NodeHttpException -> app.getString(R.string.error_request_rejected, error.statusCode)
         is IOException, is UnknownHostException, is ConnectException, is SocketTimeoutException ->
-            app.getString(R.string.error_rpc_unavailable)
-        else -> app.getString(R.string.error_rpc_unavailable)
+            app.getString(if (isPolkadotSelected) R.string.polkadot_rpc_unavailable else R.string.error_rpc_unavailable)
+        else -> app.getString(if (isPolkadotSelected) R.string.polkadot_rpc_unavailable else R.string.error_rpc_unavailable)
+    }
+
+    private fun friendlyPolkadotTransferError(error: Exception): String {
+        val message = error.message.orEmpty()
+        return when {
+            message.contains("nonce changed", ignoreCase = true) -> app.getString(R.string.error_nonce_changed)
+            message.contains("balance changed", ignoreCase = true) -> app.getString(R.string.error_balance_changed)
+            message.contains("fee changed", ignoreCase = true) -> app.getString(R.string.error_fee_changed)
+            message.contains("insufficient", ignoreCase = true) -> app.getString(R.string.error_insufficient_balance)
+            message.contains("identity", ignoreCase = true) -> app.getString(R.string.polkadot_identity_changed)
+            else -> message.ifBlank { app.getString(R.string.error_transfer_changed) }
+        }
     }
 
     private fun matchesReviewedTransaction(json: JSONObject, tx: WalletCrypto.SignedTransfer): Boolean =
@@ -483,6 +886,8 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
 
     companion object {
         const val DEMO_PAIR = "KEN/USD-DEMO"
+        const val NETWORK_PYTHON = "python-devnet"
+        const val NETWORK_POLKADOT = "polkadot-sdk-local"
     }
 }
 
@@ -647,6 +1052,7 @@ private fun WalletShell(vm: WalletViewModel) {
     }
     if (showSend) SendEntryDialog(vm, onDismiss = { showSend = false })
     vm.quote?.let { quote -> TransferReviewDialog(vm, quote) }
+    vm.polkadotQuote?.let { quote -> PolkadotTransferReviewDialog(vm, quote) }
 }
 
 @Composable
@@ -658,7 +1064,11 @@ private fun DashboardScreen(vm: WalletViewModel, onSend: () -> Unit, onReceive: 
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(stringResource(R.string.greeting), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Ink)
-                Text(stringResource(R.string.devnet_banner), style = MaterialTheme.typography.labelMedium, color = Gold)
+                Text(
+                    stringResource(if (vm.isPolkadotSelected) R.string.polkadot_template_banner else R.string.devnet_banner),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Gold
+                )
             }
             StatusPill(isConnected = vm.chain is UiState.Ok)
         }
@@ -710,11 +1120,11 @@ private fun BalanceHero(vm: WalletViewModel) {
                     Text("—", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = Color.White)
                     Text(stringResource(R.string.balance_unavailable), color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.bodySmall)
                 } else {
-                    val text = if (vm.balanceVisible) WalletCrypto.formatKen(balance) else "••••••"
+                    val text = if (vm.balanceVisible) vm.formatCurrentAmount(balance) else "••••••"
                     Text(text, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text("KEN", color = Mint, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(vm.currentTokenSymbol, color = Mint, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
-                val address = vm.wallet?.address.orEmpty()
+                val address = vm.currentAddress
                 if (address.isNotBlank()) {
                     Text(stringResource(R.string.account_address), color = Color.White.copy(alpha = .62f), style = MaterialTheme.typography.labelSmall)
                     Text(shortAddress(address), color = Color.White.copy(alpha = .82f), style = MaterialTheme.typography.bodySmall)
@@ -737,7 +1147,7 @@ private fun ConnectionCard(vm: WalletViewModel) {
                             when {
                                 isConnected -> R.string.connected
                                 vm.chain is UiState.Loading -> R.string.checking
-                                vm.rpcUrl.isBlank() -> R.string.rpc_unconfigured
+                                vm.currentRpcEndpoint.isBlank() -> R.string.rpc_unconfigured
                                 else -> R.string.disconnected
                             }
                         ),
@@ -755,7 +1165,13 @@ private fun ConnectionCard(vm: WalletViewModel) {
                 Text(stringResource(R.string.height, info.height), style = MaterialTheme.typography.bodySmall, color = Muted)
             } else {
                 Text(
-                    stringResource(if (vm.rpcUrl.isBlank()) R.string.rpc_help else R.string.error_rpc_unavailable),
+                    stringResource(
+                        when {
+                            vm.currentRpcEndpoint.isBlank() -> R.string.rpc_unconfigured
+                            vm.isPolkadotSelected -> R.string.polkadot_rpc_help
+                            else -> R.string.rpc_help
+                        }
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = Muted
                 )
@@ -781,7 +1197,7 @@ private fun RecentActivityCard(vm: WalletViewModel) {
             Text(stringResource(R.string.recent_activity), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             if (vm.recentTransactions.isEmpty()) {
                 val emptyMessage = when {
-                    vm.rpcUrl.isBlank() -> R.string.rpc_help
+                    vm.currentRpcEndpoint.isBlank() -> R.string.rpc_unconfigured
                     vm.chain !is UiState.Ok -> R.string.error_rpc_unavailable
                     vm.historyUnavailable -> R.string.history_unavailable
                     else -> R.string.no_recent_activity
@@ -790,7 +1206,7 @@ private fun RecentActivityCard(vm: WalletViewModel) {
             } else {
                 vm.recentTransactions.take(5).forEachIndexed { index, tx ->
                     if (index > 0) HorizontalDivider(color = Border)
-                    val outgoing = tx.from == vm.wallet?.address
+                    val outgoing = tx.from == vm.currentAddress
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
                         Surface(
                             shape = CircleShape,
@@ -806,7 +1222,7 @@ private fun RecentActivityCard(vm: WalletViewModel) {
                             Text(stringResource(R.string.confirmed_at, tx.blockHeight), style = MaterialTheme.typography.bodySmall, color = Muted)
                         }
                         Text(
-                            (if (outgoing) "−" else "+") + WalletCrypto.formatKen(tx.amountBase) + " KEN",
+                            (if (outgoing) "−" else "+") + vm.formatCurrentAmount(tx.amountBase) + " " + vm.currentTokenSymbol,
                             color = if (outgoing) Ink else Positive,
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
@@ -1068,13 +1484,21 @@ private fun AssetsScreen(vm: WalletViewModel, onSend: () -> Unit) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        ScreenHeader(stringResource(R.string.assets_title), stringResource(R.string.devnet_banner))
+        ScreenHeader(
+            stringResource(R.string.assets_title),
+            stringResource(if (vm.isPolkadotSelected) R.string.polkadot_template_banner else R.string.devnet_banner)
+        )
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(R.string.on_chain_asset), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (vm.isPolkadotSelected) vm.currentTokenSymbol + " · " + stringResource(R.string.polkadot_local_asset)
+                    else stringResource(R.string.on_chain_asset),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
                 val account = (vm.account as? UiState.Ok)?.value
                 Text(
-                    if (vm.balanceVisible && account != null) WalletCrypto.formatKen(account.balanceBase) + " KEN" else if (account == null) "—" else "••••••",
+                    if (vm.balanceVisible && account != null) vm.formatCurrentAmount(account.balanceBase) + " " + vm.currentTokenSymbol else if (account == null) "—" else "••••••",
                     style = MaterialTheme.typography.headlineMedium,
                     color = Emerald,
                     fontWeight = FontWeight.Bold
@@ -1089,8 +1513,13 @@ private fun AssetsScreen(vm: WalletViewModel, onSend: () -> Unit) {
         AppCard {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.receive), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.Start))
-                Text(stringResource(R.string.receive_hint), color = Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.Start))
-                vm.wallet?.address?.let { address ->
+                Text(
+                    stringResource(if (vm.isPolkadotSelected) R.string.polkadot_receive_hint else R.string.receive_hint),
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.align(Alignment.Start)
+                )
+                vm.currentAddress.takeIf { it.isNotBlank() }?.let { address ->
                     AddressQr(address)
                     Text(address, color = Ink, style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -1113,11 +1542,36 @@ private fun AssetsScreen(vm: WalletViewModel, onSend: () -> Unit) {
 private fun SettingsScreen(vm: WalletViewModel) {
     var rpcText by remember(vm.rpcUrl) { mutableStateOf(vm.rpcUrl) }
     var backendText by remember(vm.backendUrl) { mutableStateOf(vm.backendUrl) }
+    var substrateRpcText by remember(vm.substrateRpcUrl) { mutableStateOf(vm.substrateRpcUrl) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         ScreenHeader(stringResource(R.string.settings_title), stringResource(R.string.security_note))
+        AppCard {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.network_choice_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FilterChip(
+                        selected = !vm.isPolkadotSelected,
+                        onClick = { vm.selectNetwork(WalletViewModel.NETWORK_PYTHON) },
+                        label = { Text(stringResource(R.string.network_python_option)) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    FilterChip(
+                        selected = vm.isPolkadotSelected,
+                        onClick = { vm.selectNetwork(WalletViewModel.NETWORK_POLKADOT) },
+                        label = { Text(stringResource(R.string.network_polkadot_option)) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                Text(
+                    stringResource(if (vm.isPolkadotSelected) R.string.polkadot_demo_exchange_note else R.string.devnet_banner),
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
@@ -1151,7 +1605,66 @@ private fun SettingsScreen(vm: WalletViewModel) {
                 Text(stringResource(R.string.lan_setup_body), color = Muted, style = MaterialTheme.typography.bodySmall)
             }
         }
+        PolkadotNetworkSettings(vm, substrateRpcText) { substrateRpcText = it }
         ConnectionCard(vm)
+    }
+}
+
+@Composable
+private fun PolkadotNetworkSettings(vm: WalletViewModel, rpcText: String, onRpcTextChange: (String) -> Unit) {
+    AppCard {
+        Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
+            Text(stringResource(R.string.polkadot_settings_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            OutlinedTextField(
+                value = rpcText,
+                onValueChange = onRpcTextChange,
+                label = { Text(stringResource(R.string.polkadot_rpc_address)) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+            )
+            Text(stringResource(R.string.polkadot_rpc_help), style = MaterialTheme.typography.bodySmall, color = Muted)
+            Button(onClick = { vm.saveSubstrateRpc(rpcText) }, enabled = !vm.busy, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.save_settings))
+            }
+            Button(
+                onClick = vm::inspectCurrentPolkadotNetwork,
+                enabled = !vm.busy && vm.substrateRpcUrl.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(stringResource(R.string.polkadot_inspect_network))
+            }
+            if (vm.polkadotIdentity != null && !vm.isPolkadotTrusted) {
+                Button(
+                    onClick = vm::trustCurrentPolkadotNetwork,
+                    enabled = !vm.busy,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(if (vm.polkadotChainPin == null) R.string.polkadot_trust_network else R.string.polkadot_repin_network))
+                }
+            }
+            vm.polkadotIdentity?.let { identity ->
+                Text(
+                    stringResource(R.string.polkadot_identity_summary, identity.chainName, identity.systemName, identity.specName, identity.specVersion),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Ink
+                )
+                Text(stringResource(R.string.polkadot_identity_token, identity.tokenSymbol, identity.tokenDecimals, identity.finalizedHeight), style = MaterialTheme.typography.bodySmall, color = Muted)
+                Text(stringResource(R.string.polkadot_review_genesis), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                SelectionContainer { Text(identity.genesisHash, style = MaterialTheme.typography.bodySmall) }
+                Text(
+                    stringResource(if (vm.isPolkadotTrusted) R.string.polkadot_pin_matches else R.string.polkadot_pin_mismatch),
+                    color = if (vm.isPolkadotTrusted) Positive else Negative,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            vm.polkadotPending?.let { pending ->
+                Text(stringResource(R.string.polkadot_transfer_still_pending, pending.hash), color = Negative, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(stringResource(R.string.polkadot_template_warning), color = Gold, style = MaterialTheme.typography.bodySmall)
+            vm.settingsError?.let { ErrorText(it) }
+            vm.settingsMessage?.let { SuccessText(it) }
+        }
     }
 }
 
@@ -1161,7 +1674,12 @@ private fun SendEntryDialog(vm: WalletViewModel, onDismiss: () -> Unit) {
     var amount by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = { if (!vm.busy) onDismiss() },
-        title = { Text(stringResource(R.string.send_ken_title), fontWeight = FontWeight.Bold) },
+        title = {
+            Text(
+                stringResource(if (vm.isPolkadotSelected) R.string.polkadot_send_title else R.string.send_ken_title),
+                fontWeight = FontWeight.Bold
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
@@ -1174,7 +1692,12 @@ private fun SendEntryDialog(vm: WalletViewModel, onDismiss: () -> Unit) {
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { amount = it },
-                    label = { Text(stringResource(R.string.amount)) },
+                    label = {
+                        Text(
+                            if (vm.isPolkadotSelected) stringResource(R.string.polkadot_amount, vm.currentTokenSymbol)
+                            else stringResource(R.string.amount)
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
@@ -1190,6 +1713,36 @@ private fun SendEntryDialog(vm: WalletViewModel, onDismiss: () -> Unit) {
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !vm.busy) { Text(stringResource(R.string.cancel)) } }
+    )
+}
+
+@Composable
+private fun PolkadotTransferReviewDialog(vm: WalletViewModel, quote: PolkadotTransferQuote) {
+    val totalBase = if (quote.amountBase <= Long.MAX_VALUE - quote.feeBase) quote.amountBase + quote.feeBase else Long.MAX_VALUE
+    AlertDialog(
+        onDismissRequest = { if (!vm.busy) vm.cancelQuote() },
+        title = { Text(stringResource(R.string.review_transfer), fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ReviewLine(stringResource(R.string.polkadot_review_chain), quote.identity.chainName + " · " + quote.identity.systemName)
+                ReviewLine(stringResource(R.string.polkadot_review_genesis), quote.identity.genesisHash)
+                ReviewLine(stringResource(R.string.recipient), quote.recipient)
+                ReviewLine(stringResource(R.string.polkadot_amount, quote.identity.tokenSymbol), WalletCrypto.formatAmount(quote.amountBase, quote.identity.tokenDecimals) + " " + quote.identity.tokenSymbol)
+                ReviewLine(stringResource(R.string.fee), WalletCrypto.formatAmount(quote.feeBase, quote.identity.tokenDecimals) + " " + quote.identity.tokenSymbol)
+                ReviewLine(stringResource(R.string.total), WalletCrypto.formatAmount(totalBase, quote.identity.tokenDecimals) + " " + quote.identity.tokenSymbol)
+                ReviewLine(stringResource(R.string.nonce), quote.nonce.toString())
+                Text(stringResource(R.string.polkadot_transfer_security), color = Muted, style = MaterialTheme.typography.bodySmall)
+                vm.sendError?.let { ErrorText(it) }
+            }
+        },
+        confirmButton = {
+            Button(onClick = vm::confirmTransfer, enabled = !vm.busy && vm.isPolkadotTrusted && vm.polkadotPending == null) {
+                Text(if (vm.busy) stringResource(R.string.sending) else stringResource(R.string.confirm_sign_send))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = vm::cancelQuote, enabled = !vm.busy) { Text(stringResource(R.string.cancel)) }
+        }
     )
 }
 

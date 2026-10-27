@@ -56,6 +56,12 @@ jobs:
             ${{ runner.os }}-polkadot-stable2603-7-rust-1.93.0-
       - name: Build the pinned official Solochain template
         run: ./polkadot/build-node.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polkadot-solochain-template-node
+          path: polkadot/sdk/target/release/solochain-template-node
+          if-no-files-found: error
+          retention-days: 1
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -68,19 +74,62 @@ jobs:
 
   android-debug:
     name: Android debug APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    needs: polkadot-sdk-local-node
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: polkadot-solochain-template-node
+          path: polkadot/sdk/target/release
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
           cache: gradle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: polkadot/integration-test/package-lock.json
       - uses: android-actions/setup-android@v4
         with:
           packages: ''
       - run: yes | sdkmanager "platforms;android-34" "build-tools;34.0.0"
-      - run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      - name: Verify the excluded Nova mnemonic dependencies stay out of the app
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon :app:dependencies --configuration debugRuntimeClasspath --console=plain >/tmp/kenan-android-runtime-dependencies.txt
+          if grep -Eiq 'com\.github\.NovaCrypto:(BIP39|Sha256|ToRuntime)|io\.github\.novacrypto:(SHA256|ToRuntime)|spongycastle' /tmp/kenan-android-runtime-dependencies.txt; then
+            cat /tmp/kenan-android-runtime-dependencies.txt
+            echo 'Unexpected optional Nova mnemonic dependency in Android runtime classpath' >&2
+            exit 1
+          fi
+        working-directory: android-app
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefix polkadot/integration-test
+      - name: Run Android unit and live Substrate integration tests on the local template
+        run: |
+          set -euo pipefail
+          node_bin="$GITHUB_WORKSPACE/polkadot/sdk/target/release/solochain-template-node"
+          chmod +x "$node_bin"
+          "$node_bin" --dev --tmp --rpc-addr 127.0.0.1 --rpc-port 9944 --rpc-methods unsafe \
+            --listen-addr /ip4/127.0.0.1/tcp/30333 >/tmp/kenan-polkadot-node.log 2>&1 &
+          node_pid=$!
+          trap 'kill "$node_pid" 2>/dev/null || true; wait "$node_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in $(seq 1 60); do
+            if ! kill -0 "$node_pid" 2>/dev/null; then cat /tmp/kenan-polkadot-node.log; exit 1; fi
+            if curl --silent --show-error --fail -H 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"system_chain","params":[]}' \
+              http://127.0.0.1:9944/ >/tmp/kenan-polkadot-ready.json 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then cat /tmp/kenan-polkadot-node.log; exit 1; fi
+          POLKADOT_RPC_URL=ws://127.0.0.1:9944 node "$GITHUB_WORKSPACE/polkadot/integration-test/fund-android-test-wallet.cjs"
+          POLKADOT_RPC_URL=ws://127.0.0.1:9944 ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain
         working-directory: android-app
       - uses: actions/upload-artifact@v4
         with:

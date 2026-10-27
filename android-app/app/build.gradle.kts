@@ -1,4 +1,8 @@
-plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
 val kenanNodeUrl = providers.gradleProperty("kenanNodeUrl").orElse("").get()
 fun String.asJavaStringLiteral(): String = "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 android {
@@ -14,7 +18,6 @@ android {
         buildConfigField("String", "KENAN_NODE_URL", kenanNodeUrl.asJavaStringLiteral())
     }
     buildFeatures { compose = true; buildConfig = true }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
@@ -27,7 +30,16 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80.2")
+    implementation("com.neovisionaries:nv-websocket-client:2.10")
+    // The wallet uses its own BIP39 implementation; exclude NovaCrypto's GPL-3.0 mnemonic stack.
+    implementation("io.github.nova-wallet.substrate-sdk-android:core:2.12.2") {
+        exclude(group = "com.github.NovaCrypto", module = "BIP39")
+        exclude(group = "com.github.NovaCrypto", module = "Sha256")
+        exclude(group = "com.github.NovaCrypto", module = "ToRuntime")
+        exclude(group = "io.github.novacrypto", module = "SHA256")
+        exclude(group = "io.github.novacrypto", module = "ToRuntime")
+    }
     implementation("com.google.zxing:core:3.5.3")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")

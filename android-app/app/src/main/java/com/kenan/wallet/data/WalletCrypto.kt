@@ -128,16 +128,48 @@ object WalletCrypto {
         }
     }
 
-    fun parseKenAmount(value: String): Long {
-        val amount = try { BigDecimal(value.trim()) } catch (_: NumberFormatException) {
-            throw IllegalArgumentException("أدخل مبلغ KEN صالحًا")
+    /** Signs the SCALE payload supplied by the Substrate SDK without changing the wallet's BIP39/Ed25519 derivation. */
+    fun signSubstratePayload(mnemonic: String, payload: ByteArray, expectedAccountId: ByteArray): ByteArray {
+        require(expectedAccountId.size == 32) { "Substrate AccountId must contain 32 bytes" }
+        val normalized = normalizeAndValidate(mnemonic)
+        val seed = bip39Seed(normalized)
+        try {
+            val privateKey = Ed25519PrivateKeyParameters(seed, 0)
+            val publicKey = privateKey.generatePublicKey().encoded
+            try {
+                require(publicKey.contentEquals(expectedAccountId)) { "Local wallet key does not match Substrate AccountId" }
+                val signer = Ed25519Signer()
+                signer.init(true, privateKey)
+                signer.update(payload, 0, payload.size)
+                return signer.generateSignature()
+            } finally {
+                publicKey.fill(0)
+            }
+        } finally {
+            seed.fill(0)
         }
-        require(amount.signum() > 0) { "يجب أن يكون المبلغ أكبر من صفر" }
-        return try { amount.setScale(KEN_DECIMALS, RoundingMode.UNNECESSARY).movePointRight(KEN_DECIMALS).longValueExact() }
-        catch (_: ArithmeticException) { throw IllegalArgumentException("المبلغ يتجاوز 9 منازل عشرية أو الحد المدعوم") }
     }
 
-    fun formatKen(baseUnits: Long): String = BigDecimal.valueOf(baseUnits, KEN_DECIMALS).stripTrailingZeros().toPlainString()
+    fun parseKenAmount(value: String): Long {
+        return parseAmount(value, KEN_DECIMALS)
+    }
+
+    fun parseAmount(value: String, decimals: Int): Long {
+        require(decimals in 0..18) { "Unsupported token decimals" }
+        val amount = try { BigDecimal(value.trim()) } catch (_: NumberFormatException) {
+            throw IllegalArgumentException("أدخل مبلغًا صالحًا")
+        }
+        require(amount.signum() > 0) { "يجب أن يكون المبلغ أكبر من صفر" }
+        return try { amount.setScale(decimals, RoundingMode.UNNECESSARY).movePointRight(decimals).longValueExact() }
+        catch (_: ArithmeticException) { throw IllegalArgumentException("المبلغ يتجاوز الدقة أو الحد المدعوم") }
+    }
+
+    fun formatKen(baseUnits: Long): String = formatAmount(baseUnits, KEN_DECIMALS)
+
+    fun formatAmount(baseUnits: Long, decimals: Int): String {
+        require(decimals in 0..18) { "Unsupported token decimals" }
+        return BigDecimal.valueOf(baseUnits, decimals).stripTrailingZeros().toPlainString()
+    }
 
     fun isValidAddress(address: String): Boolean = Regex("kenan1[0-9a-f]{40}").matches(address)
 

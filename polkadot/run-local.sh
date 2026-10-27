@@ -11,5 +11,6 @@ if [[ ! -x "$NODE" ]]; then
   exit 2
 fi
 
-# Keep both RPC (default local interface) and P2P confined to loopback.
-exec "$NODE" --dev --rpc-port "$RPC_PORT" --listen-addr "/ip4/127.0.0.1/tcp/$P2P_PORT"
+# Keep RPC and P2P explicitly confined to loopback; unsafe local RPC methods are never exposed publicly.
+exec "$NODE" --dev --rpc-addr 127.0.0.1 --rpc-port "$RPC_PORT" --rpc-methods unsafe \
+  --listen-addr "/ip4/127.0.0.1/tcp/$P2P_PORT"
