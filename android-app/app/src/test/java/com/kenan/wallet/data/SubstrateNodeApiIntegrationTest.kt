@@ -38,7 +38,7 @@ class SubstrateNodeApiIntegrationTest {
         val recipientBefore = api.account(recipientId)
         assertTrue("test wallet must be funded", before.freeBalanceBase > 0)
         assertEquals("random receiver must start empty", 0L, recipientBefore.freeBalanceBase)
-        val amount = BigInteger.TEN.pow(identity.tokenDecimals).longValueExact()
+        val amount = BigInteger.valueOf(10L).pow(identity.tokenDecimals).longValueExactCompat()
         val quote = api.quoteTransfer(senderId, recipientId, recipientAddress, amount)
         assertTrue("quote must include enough to pay the transfer and fee", quote.balanceBase >= amount + quote.feeBase)
         assertEquals(before.nonce, quote.nonce)

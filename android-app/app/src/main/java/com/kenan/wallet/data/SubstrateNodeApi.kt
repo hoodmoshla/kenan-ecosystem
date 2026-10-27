@@ -48,6 +48,18 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
+internal fun BigInteger.longValueExactCompat(): Long {
+    val value = toLong()
+    if (BigInteger.valueOf(value) != this) throw ArithmeticException("BigInteger out of long range")
+    return value
+}
+
+internal fun BigInteger.intValueExactCompat(): Int {
+    val value = toInt()
+    if (BigInteger.valueOf(value.toLong()) != this) throw ArithmeticException("BigInteger out of int range")
+    return value
+}
+
 class SubstrateNodeApi(private val endpoint: String) {
     suspend fun inspectIdentity(): PolkadotNetworkIdentity = withContext(Dispatchers.IO) {
         RpcSession(endpoint).use { session ->
@@ -180,7 +192,7 @@ class SubstrateNodeApi(private val endpoint: String) {
                     val call = decoded.call
                     if (call.module.name != "Balances" || call.function.name !in TRANSFER_CALLS) continue
                     val to = accountIdFromAddressValue(call.arguments["dest"]) ?: continue
-                    val amount = bigInteger(call.arguments["value"]).longValueExact()
+                    val amount = bigInteger(call.arguments["value"]).longValueExactCompat()
                     if (!from.contentEquals(accountId) && !to.contentEquals(accountId)) continue
                     val phaseEvents = eventsForIndex(events, index)
                     if (!phaseEvents.any { it.module.name == "System" && it.event.name == "ExtrinsicSuccess" }) continue
@@ -223,7 +235,7 @@ class SubstrateNodeApi(private val endpoint: String) {
                         val signed = decoded.type as? Extrinsic.ExtrinsicType.Signed ?: return@use PolkadotPendingResolution.Unknown
                         val from = accountIdFromAddressValue(signed.accountIdentifier) ?: return@use PolkadotPendingResolution.Unknown
                         val to = accountIdFromAddressValue(decoded.call.arguments["dest"]) ?: return@use PolkadotPendingResolution.Unknown
-                        val amount = bigInteger(decoded.call.arguments["value"]).longValueExact()
+                        val amount = bigInteger(decoded.call.arguments["value"]).longValueExactCompat()
                         return@use PolkadotPendingResolution.Finalized(
                             PolkadotTransaction(pending.hash, SubstrateAddressCodec.fromPublicKeyHex(toHex(from)), SubstrateAddressCodec.fromPublicKeyHex(toHex(to)), amount, pending.nonce, height)
                         )
@@ -243,11 +255,11 @@ class SubstrateNodeApi(private val endpoint: String) {
         val genesisHash = rpcString(session, "chain_getBlockHash", listOf(0))
         val finalizedHash = rpcString(session, "chain_getFinalizedHead")
         val finalizedHeader = session.call("chain_getHeader", listOf(finalizedHash)).asJsonObject
-        val finalizedHeight = parseHexOrDecimal(finalizedHeader.get("number"), "finalized header number").longValueExact()
+        val finalizedHeight = parseHexOrDecimal(finalizedHeader.get("number"), "finalized header number").longValueExactCompat()
         val runtimeVersionJson = session.call("state_getRuntimeVersion").asJsonObject
         val specName = runtimeVersionJson.get("specName")?.asString ?: ""
-        val specVersion = parseHexOrDecimal(runtimeVersionJson.get("specVersion"), "runtime specVersion").intValueExact()
-        val transactionVersion = parseHexOrDecimal(runtimeVersionJson.get("transactionVersion"), "runtime transactionVersion").intValueExact()
+        val specVersion = parseHexOrDecimal(runtimeVersionJson.get("specVersion"), "runtime specVersion").intValueExactCompat()
+        val transactionVersion = parseHexOrDecimal(runtimeVersionJson.get("transactionVersion"), "runtime transactionVersion").intValueExactCompat()
         val properties = session.call("system_properties").asJsonObject
         val officialTemplate = systemName == TEMPLATE_NODE_NAME && specName == TEMPLATE_RUNTIME_NAME
         val tokenSymbol = propertyString(properties.get("tokenSymbol")).ifBlank {
@@ -255,7 +267,7 @@ class SubstrateNodeApi(private val endpoint: String) {
         }
         val tokenDecimalsValue = propertyFirst(properties.get("tokenDecimals"))
         val tokenDecimals = if (tokenDecimalsValue == null && officialTemplate) TEMPLATE_TOKEN_DECIMALS
-        else parseHexOrDecimal(tokenDecimalsValue, "system_properties.tokenDecimals").intValueExact()
+        else parseHexOrDecimal(tokenDecimalsValue, "system_properties.tokenDecimals").intValueExactCompat()
         require(chainName.isNotBlank() && systemName.isNotBlank() && specName.isNotBlank()) { "Node identity is incomplete" }
         require(genesisHash.matches(Regex("0x[0-9a-fA-F]{64}"))) { "Invalid genesis hash from RPC" }
         require(tokenSymbol.isNotBlank() && tokenDecimals in 0..18) { "Unsupported token properties from RPC" }
@@ -294,9 +306,9 @@ class SubstrateNodeApi(private val endpoint: String) {
         val account = valueType.fromHex(context.runtime, value.asString) as? Struct.Instance
             ?: error("System.Account did not decode to a struct")
         val data = account.mapping["data"] as? Struct.Instance ?: error("System.Account.data did not decode")
-        val nonce = bigInteger(account.mapping["nonce"]).longValueExact()
-        val free = bigInteger(data.mapping["free"]).longValueExact()
-        val reserved = bigInteger(data.mapping["reserved"] ?: BigInteger.ZERO).longValueExact()
+        val nonce = bigInteger(account.mapping["nonce"]).longValueExactCompat()
+        val free = bigInteger(data.mapping["free"]).longValueExactCompat()
+        val reserved = bigInteger(data.mapping["reserved"] ?: BigInteger.ZERO).longValueExactCompat()
         return PolkadotAccountState("0x${toHex(accountId)}", free, reserved, nonce)
     }
 
@@ -341,7 +353,7 @@ class SubstrateNodeApi(private val endpoint: String) {
 
     private suspend fun queryFee(session: RpcSession, extrinsicHex: String, atHash: String): Long {
         val result = session.call("payment_queryInfo", listOf(normalizeHex(extrinsicHex), atHash)).asJsonObject
-        val partialFee = parseHexOrDecimal(result.get("partialFee"), "payment_queryInfo.partialFee").longValueExact()
+        val partialFee = parseHexOrDecimal(result.get("partialFee"), "payment_queryInfo.partialFee").longValueExactCompat()
         require(partialFee >= 0) { "Runtime returned a negative fee" }
         return partialFee
     }
@@ -370,7 +382,7 @@ class SubstrateNodeApi(private val endpoint: String) {
         val index = (0 until extrinsics.size()).firstOrNull { normalizeHex(extrinsics[it].asString) == expectedExtrinsicHex }
             ?: error("Finalized block does not contain the submitted SCALE extrinsic")
         val header = session.call("chain_getHeader", listOf(finalizedHash)).asJsonObject
-        val blockHeight = parseHexOrDecimal(header.get("number"), "finalized block header number").longValueExact()
+        val blockHeight = parseHexOrDecimal(header.get("number"), "finalized block header number").longValueExactCompat()
         val phaseEvents = eventsForIndex(eventsAt(session, context, finalizedHash), index)
         require(phaseEvents.any { it.module.name == "System" && it.event.name == "ExtrinsicSuccess" }) {
             "Finalized transfer did not emit System.ExtrinsicSuccess"
@@ -382,7 +394,7 @@ class SubstrateNodeApi(private val endpoint: String) {
         }
         val balanceAfter = accountAt(session, context, senderAccountId, finalizedHash).freeBalanceBase
         val eventFee = phaseEvents.firstOrNull { it.module.name == "TransactionPayment" && it.event.name == "TransactionFeePaid" }
-            ?.event?.arguments?.getOrNull(1)?.let { runCatching { bigInteger(it).longValueExact() }.getOrNull() }
+            ?.event?.arguments?.getOrNull(1)?.let { runCatching { bigInteger(it).longValueExactCompat() }.getOrNull() }
         val actualFee = eventFee ?: (balanceBefore - balanceAfter - amountBase)
         require(actualFee >= 0 && balanceBefore - balanceAfter == amountBase + actualFee) {
             "Finalized sender balance delta does not reconcile to the transfer and fee"
@@ -417,13 +429,13 @@ class SubstrateNodeApi(private val endpoint: String) {
     }
 
     private fun eventsForIndex(events: List<GenericEventRecord>, index: Int): List<GenericEvent.Instance> = events
-        .filter { it.phaseName == "ApplyExtrinsic" && runCatching { bigInteger(it.phaseValue).intValueExact() == index }.getOrDefault(false) }
+        .filter { it.phaseName == "ApplyExtrinsic" && runCatching { bigInteger(it.phaseValue).intValueExactCompat() == index }.getOrDefault(false) }
         .map { it.event }
 
     private fun transferEventMatches(event: GenericEvent.Instance, from: ByteArray, to: ByteArray, amount: Long): Boolean {
         val eventFrom = event.arguments.getOrNull(0) as? ByteArray ?: return false
         val eventTo = event.arguments.getOrNull(1) as? ByteArray ?: return false
-        val eventAmount = runCatching { bigInteger(event.arguments.getOrNull(2)).longValueExact() }.getOrNull() ?: return false
+        val eventAmount = runCatching { bigInteger(event.arguments.getOrNull(2)).longValueExactCompat() }.getOrNull() ?: return false
         return eventFrom.contentEquals(from) && eventTo.contentEquals(to) && eventAmount == amount
     }
 

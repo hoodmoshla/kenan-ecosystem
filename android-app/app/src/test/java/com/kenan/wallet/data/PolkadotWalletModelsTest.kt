@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.math.BigInteger
 
 class PolkadotWalletModelsTest {
     private val identity = PolkadotNetworkIdentity(
@@ -29,6 +30,23 @@ class PolkadotWalletModelsTest {
 
     @Test fun mortalEraBirthRespectsSdkPhaseQuantizationForLongPeriods() {
         assertEquals(5_000L, substrateMortalEraBirthBlock(5_001, 8_192, 5_000))
+    }
+
+    @Test fun checkedBigIntegerConversionsPreserveBoundaryValues() {
+        assertEquals(Long.MIN_VALUE, BigInteger.valueOf(Long.MIN_VALUE).longValueExactCompat())
+        assertEquals(Long.MAX_VALUE, BigInteger.valueOf(Long.MAX_VALUE).longValueExactCompat())
+        assertEquals(Int.MIN_VALUE, BigInteger.valueOf(Int.MIN_VALUE.toLong()).intValueExactCompat())
+        assertEquals(Int.MAX_VALUE, BigInteger.valueOf(Int.MAX_VALUE.toLong()).intValueExactCompat())
+    }
+
+    @Test(expected = ArithmeticException::class)
+    fun checkedLongConversionRejectsOverflow() {
+        BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE).longValueExactCompat()
+    }
+
+    @Test(expected = ArithmeticException::class)
+    fun checkedIntConversionRejectsOverflow() {
+        BigInteger.valueOf(Int.MAX_VALUE.toLong()).add(BigInteger.ONE).intValueExactCompat()
     }
 
     @Test fun chainPinMatchesOnlyTheExpectedGenesisAndAssetIdentity() {
