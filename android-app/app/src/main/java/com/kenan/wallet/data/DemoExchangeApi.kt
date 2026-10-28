@@ -9,16 +9,29 @@ import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.UUID
 
-/** A visible order-book level returned by the demo exchange. */
-data class DemoBookEntry(val id: Long, val price: Double?, val quantity: Double)
+/** A submitted DEMO limit order from the locally configured backend. */
+data class DemoBookEntry(
+    val id: Long,
+    val priceNum: Long,
+    val priceDen: Long,
+    val qtyUnits: Long,
+    val demoOnly: Boolean
+)
 
 data class DemoTrade(
     val pair: String,
-    val price: Double,
-    val quantity: Double,
+    val qtyUnits: Long,
+    val quoteUnits: Long,
+    val priceNum: Long,
+    val priceDen: Long,
+    val feeUnits: Long,
     val demoOnly: Boolean
-)
+) {
+    /** Display-only projection for the sparkline; no order math uses a floating point value. */
+    val chartPrice: Double get() = priceNum.toDouble() / priceDen.toDouble()
+}
 
 data class DemoOrder(
     val id: Long,
@@ -26,14 +39,20 @@ data class DemoOrder(
     val side: String,
     val pair: String,
     val kind: String,
-    val price: Double?,
-    val quantity: Double,
-    val filled: Double,
+    val priceNum: Long?,
+    val priceDen: Long?,
+    val qtyUnits: Long,
+    val filledUnits: Long,
     val status: String,
     val demoOnly: Boolean
 )
 
-data class DemoBalance(val asset: String, val available: Double, val reserved: Double)
+data class DemoBalance(
+    val asset: String,
+    val availableUnits: Long,
+    val reservedUnits: Long,
+    val demoOnly: Boolean
+)
 
 data class DemoMarketSnapshot(
     val pair: String,
@@ -45,23 +64,27 @@ data class DemoMarketSnapshot(
     val demoOnly: Boolean
 )
 
-data class DemoOrderSubmission(val id: Long, val status: String, val filled: Double, val demoOnly: Boolean)
+data class DemoOrderSubmission(val id: Long, val status: String, val filledUnits: Long, val demoOnly: Boolean)
 data class DemoOrderCancellation(val id: Long, val status: String, val demoOnly: Boolean)
 
 class DemoExchangeException(val statusCode: Int?) :
     IllegalStateException("تعذر إكمال طلب التداول التجريبي")
 
-/** Explicit-address HTTP client for the in-memory DEMO exchange; it never handles keys or signing. */
+/**
+ * HTTP client for the local DEMO exchange only. It has no funding/deposit
+ * method, handles no wallet keys, and sends integer smallest ledger units.
+ */
 object DemoExchangeApi {
     private const val CONNECT_TIMEOUT_MS = 5_000
     private const val READ_TIMEOUT_MS = 8_000
+    private const val DEMO_PAIR = "DEMO_BASE/DEMO_QUOTE"
 
     suspend fun marketSnapshot(baseUrl: String, user: String, pair: String): DemoMarketSnapshot =
         withContext(Dispatchers.IO) {
             require(user.isNotBlank())
             requireValidPair(pair)
             val book = request(baseUrl, "GET", "/exchange/book?pair=${encode(pair)}")
-            val tradeResponse = request(baseUrl, "GET", "/exchange/trades")
+            val tradeResponse = request(baseUrl, "GET", "/exchange/trades?user=${encode(user)}")
             val orderResponse = request(baseUrl, "GET", "/exchange/orders?user=${encode(user)}")
             val balanceResponse = request(baseUrl, "GET", "/exchange/balances/${encode(user)}")
             checkDemo(book)
@@ -80,71 +103,92 @@ object DemoExchangeApi {
             )
         }
 
-    suspend fun depositDemo(baseUrl: String, user: String, asset: String, amount: Double): List<DemoBalance> =
-        withContext(Dispatchers.IO) {
-            require(user.isNotBlank() && asset.isNotBlank())
-            require(amount.isFinite() && amount > 0.0)
-            val response = request(
-                baseUrl,
-                "POST",
-                "/exchange/deposit-demo",
-                JSONObject().put("user", user).put("asset", asset).put("amount", amount)
-            )
-            checkDemo(response)
-            parseBalances(response.getJSONObject("balances"))
-        }
-
     suspend fun placeOrder(
         baseUrl: String,
         user: String,
         side: String,
         pair: String,
         kind: String,
-        qty: Double,
-        price: Double? = null
+        qtyUnits: Long,
+        priceNum: Long? = null,
+        priceDen: Long? = null,
+        quoteBudgetUnits: Long? = null,
+        idempotencyKey: String = UUID.randomUUID().toString()
     ): DemoOrderSubmission = withContext(Dispatchers.IO) {
         require(user.isNotBlank())
         require(side == "buy" || side == "sell")
         require(kind == "limit" || kind == "market")
         requireValidPair(pair)
-        require(qty.isFinite() && qty > 0.0)
-        require(price == null || (price.isFinite() && price > 0.0))
+        require(qtyUnits > 0)
+        require(idempotencyKey.length in 8..128)
+        if (kind == "limit") {
+            require(priceNum != null && priceNum > 0 && priceDen != null && priceDen > 0)
+            require(quoteBudgetUnits == null)
+        } else {
+            require(priceNum == null && priceDen == null)
+            if (side == "buy") require(quoteBudgetUnits != null && quoteBudgetUnits > 0)
+            else require(quoteBudgetUnits == null)
+        }
+
         val body = JSONObject()
             .put("user", user)
             .put("side", side)
             .put("pair", pair)
             .put("kind", kind)
-            .put("qty", qty)
-        if (price != null) body.put("price", price)
-        val response = request(baseUrl, "POST", "/exchange/orders", body)
+            .put("qty_units", qtyUnits)
+        if (priceNum != null) body.put("price_num", priceNum)
+        if (priceDen != null) body.put("price_den", priceDen)
+        if (quoteBudgetUnits != null) body.put("quote_budget_units", quoteBudgetUnits)
+        val response = request(
+            baseUrl,
+            "POST",
+            "/exchange/orders",
+            body,
+            mapOf("Idempotency-Key" to idempotencyKey)
+        )
         checkDemo(response)
+        val order = response.getJSONObject("order")
+        checkDemo(order)
         DemoOrderSubmission(
-            id = response.getLong("id"),
-            status = response.getString("status"),
-            filled = response.optDouble("filled", 0.0),
+            id = order.getLong("id"),
+            status = order.getString("status"),
+            filledUnits = order.getLong("filled_units"),
             demoOnly = true
         )
     }
 
-    suspend fun cancelOrder(baseUrl: String, user: String, id: Long): DemoOrderCancellation =
-        withContext(Dispatchers.IO) {
-            require(user.isNotBlank())
-            require(id > 0)
-            val response = request(
-                baseUrl,
-                "POST",
-                "/exchange/orders/$id/cancel",
-                JSONObject().put("user", user)
-            )
-            checkDemo(response)
-            DemoOrderCancellation(
-                id = response.getLong("id"),
-                status = response.getString("status"),
-                demoOnly = true
-            )
-        }
+    suspend fun cancelOrder(
+        baseUrl: String,
+        user: String,
+        id: Long,
+        idempotencyKey: String = UUID.randomUUID().toString()
+    ): DemoOrderCancellation = withContext(Dispatchers.IO) {
+        require(user.isNotBlank())
+        require(id > 0)
+        val response = request(
+            baseUrl,
+            "POST",
+            "/exchange/orders/$id/cancel",
+            JSONObject().put("user", user),
+            mapOf("Idempotency-Key" to idempotencyKey)
+        )
+        checkDemo(response)
+        val order = response.getJSONObject("order")
+        checkDemo(order)
+        DemoOrderCancellation(
+            id = order.getLong("id"),
+            status = order.getString("status"),
+            demoOnly = true
+        )
+    }
 
-    private fun request(baseUrl: String, method: String, path: String, body: JSONObject? = null): JSONObject {
+    private fun request(
+        baseUrl: String,
+        method: String,
+        path: String,
+        body: JSONObject? = null,
+        headers: Map<String, String> = emptyMap()
+    ): JSONObject {
         val connection = try {
             URL(normalizeBaseUrl(baseUrl) + path).openConnection() as HttpURLConnection
         } catch (_: Exception) {
@@ -155,6 +199,7 @@ object DemoExchangeApi {
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
             connection.setRequestProperty("Accept", "application/json")
+            headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
             if (body != null) {
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 connection.doOutput = true
@@ -186,48 +231,66 @@ object DemoExchangeApi {
     }
 
     private fun requireValidPair(pair: String) {
-        val assets = pair.split('/')
-        require(assets.size == 2 && assets.all { it.isNotBlank() } && assets[0] != assets[1])
+        require(pair == DEMO_PAIR) { "زوج DEMO غير متاح" }
     }
 
     private fun encode(value: String): String =
         URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
 
     private fun checkDemo(json: JSONObject) {
-        if (!json.optBoolean("demo_only", false)) throw DemoExchangeException(null)
+        if (json.optString("environment") != "DEMO" ||
+            !json.optBoolean("demo_only", false) || !json.optBoolean("test_only", false)) {
+            throw DemoExchangeException(null)
+        }
     }
 
     private fun parseBook(array: JSONArray): List<DemoBookEntry> = buildList(array.length()) {
         for (index in 0 until array.length()) {
             val item = array.getJSONObject(index)
-            add(DemoBookEntry(item.getLong("id"), nullableDouble(item, "price"), item.getDouble("qty")))
+            checkDemo(item)
+            val price = item.getJSONObject("price")
+            add(DemoBookEntry(
+                item.getLong("id"), price.getLong("num"), price.getLong("den"),
+                item.getLong("qty_units"), true
+            ))
         }
     }
 
     private fun parseTrades(array: JSONArray): List<DemoTrade> = buildList(array.length()) {
         for (index in 0 until array.length()) {
             val item = array.getJSONObject(index)
-            add(DemoTrade(item.getString("pair"), item.getDouble("price"), item.getDouble("qty"), true))
+            checkDemo(item)
+            val price = item.getJSONObject("price")
+            add(DemoTrade(
+                pair = item.getString("pair"),
+                qtyUnits = item.getLong("qty_units"),
+                quoteUnits = item.getLong("quote_units"),
+                priceNum = price.getLong("num"),
+                priceDen = price.getLong("den"),
+                feeUnits = item.getLong("fee_units"),
+                demoOnly = true
+            ))
         }
     }
 
     private fun parseOrders(array: JSONArray): List<DemoOrder> = buildList(array.length()) {
         for (index in 0 until array.length()) {
             val item = array.getJSONObject(index)
-            add(
-                DemoOrder(
-                    id = item.getLong("id"),
-                    user = item.getString("user"),
-                    side = item.getString("side"),
-                    pair = item.getString("pair"),
-                    kind = item.getString("kind"),
-                    price = nullableDouble(item, "price"),
-                    quantity = item.getDouble("qty"),
-                    filled = item.getDouble("filled"),
-                    status = item.getString("status"),
-                    demoOnly = true
-                )
-            )
+            checkDemo(item)
+            val price = if (item.isNull("limit_price")) null else item.getJSONObject("limit_price")
+            add(DemoOrder(
+                id = item.getLong("id"),
+                user = item.getString("user"),
+                side = item.getString("side"),
+                pair = item.getString("pair"),
+                kind = item.getString("kind"),
+                priceNum = price?.getLong("num"),
+                priceDen = price?.getLong("den"),
+                qtyUnits = item.getLong("qty_units"),
+                filledUnits = item.getLong("filled_units"),
+                status = item.getString("status"),
+                demoOnly = true
+            ))
         }
     }
 
@@ -236,10 +299,13 @@ object DemoExchangeApi {
         while (assets.hasNext()) {
             val asset = assets.next()
             val balance = objectValue.getJSONObject(asset)
-            add(DemoBalance(asset, balance.getDouble("free"), balance.getDouble("reserved")))
+            checkDemo(balance)
+            add(DemoBalance(
+                asset,
+                balance.getLong("available_units"),
+                balance.getLong("reserved_units"),
+                true
+            ))
         }
     }
-
-    private fun nullableDouble(json: JSONObject, key: String): Double? =
-        if (json.isNull(key)) null else json.getDouble(key)
 }

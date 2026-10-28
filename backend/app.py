@@ -28,8 +28,8 @@ from backend.modules.features import (  # noqa: E402
     bridge_transfer)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXCHANGE_DB = os.environ.get("KENAN_EXCHANGE_DB", os.path.join(ROOT, "data", "exchange.sqlite3"))
-ENGINE = Engine(EXCHANGE_DB, allow_test_funding=False)
+EXCHANGE_DB = os.path.join(ROOT, "data", "demo-exchange.sqlite3")
+ENGINE = Engine(EXCHANGE_DB)
 CIRCLES: dict = {}
 GOV = Governance()
 NODE_URL = os.environ.get("KENAN_NODE_URL", "http://127.0.0.1:8545")
@@ -65,6 +65,8 @@ def make_handler():
             pass
 
         def _send(self, code, obj):
+            if urlsplit(self.path).path.startswith("/exchange/") and isinstance(obj, dict):
+                obj = {"environment": "DEMO", "demo_only": True, "test_only": True, **obj}
             body = json.dumps(obj, ensure_ascii=False, default=str).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -174,6 +176,13 @@ def make_handler():
                 counts = ENGINE.counts()
                 return self._send(200, {"node_url": NODE_URL, **counts, "circles": len(CIRCLES)})
             if parsed.path.startswith("/exchange/"):
+                try:
+                    ENGINE.record_rejected_event(
+                        "exchange_request_rejected", reference=parsed.path,
+                        payload={"reason": "unknown exchange endpoint"},
+                    )
+                except Exception:
+                    pass
                 return self._send(404, {"error": "not found", "test_only": True})
             return self._send(404, {"error": "not found"})
 
@@ -213,6 +222,13 @@ def make_handler():
                     result = ENGINE.cancel(parts[2], b.get("user"), self.headers.get("Idempotency-Key"))
                     return self._send(200, result)
                 if path.startswith("/exchange/"):
+                    try:
+                        ENGINE.record_rejected_event(
+                            "exchange_request_rejected", user=str(b.get("user", "anonymous")),
+                            reference=path, payload={"reason": "unknown exchange endpoint"},
+                        )
+                    except Exception:
+                        pass
                     return self._send(404, {"error": "not found", "test_only": True})
                 if path == "/shield/check":
                     return self._send(200, shield_check(b))

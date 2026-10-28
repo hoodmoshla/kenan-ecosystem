@@ -19,6 +19,7 @@ sys.path.insert(0, ROOT)
 from blockchain.kenan_chain import Chain, UNIT, BASE_FEE, verify_signature  # noqa: E402
 from blockchain.node_server import make_handler as node_handler  # noqa: E402
 from backend.app import make_handler as backend_handler  # noqa: E402
+from backend.exchange.demo_funding import LocalDemoFunder  # noqa: E402
 from backend.exchange.engine import Engine  # noqa: E402
 from backend.modules.features import (  # noqa: E402
     shield_check, intelligence_answer, draft_transfer, Circle,
@@ -173,80 +174,82 @@ class TestChain(unittest.TestCase):
 
 class TestExchange(unittest.TestCase):
     def test_limit_match_partial_and_reserved(self):
-        e = Engine(allow_test_funding=True)
+        e = Engine()
         self.addCleanup(e.close)
-        e.issue_test_fixture("seller", "KEN", 10, "legacy-test-seller-01")
-        e.issue_test_fixture("buyer", "USD", 1000, "legacy-test-buyer-001")
-        e.place("seller", "sell", "KEN/USD", "limit", 10, 10, 1,
+        funder = LocalDemoFunder(e.ledger)
+        funder.grant("seller", "DEMO_BASE", 10, "legacy-test-seller-01")
+        funder.grant("buyer", "DEMO_QUOTE", 1000, "legacy-test-buyer-001")
+        e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 10, 10, 1,
                 idempotency_key="legacy-test-ask-001")
-        result = e.place("buyer", "buy", "KEN/USD", "limit", 4, 10, 1,
+        result = e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 4, 10, 1,
                          idempotency_key="legacy-test-bid-001")
         self.assertEqual(result["order"]["status"], "filled")
         self.assertEqual(len(e.trades_snapshot()), 1)
         self.assertEqual(e.trades_snapshot()[0]["qty_units"], 4)
-        self.assertEqual(e.balances_snapshot("seller")["KEN"]["reserved_units"], 6)
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["reserved_units"], 6)
         with self.assertRaises(ValueError):
-            e.place("buyer", "buy", "KEN/USD", "limit", 100000, 10, 1,
+            e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 100000, 10, 1,
                     idempotency_key="legacy-insufficient-01")
 
     def test_cancel_releases_reservation(self):
-        e = Engine(allow_test_funding=True)
+        e = Engine()
         self.addCleanup(e.close)
-        e.issue_test_fixture("seller", "KEN", 5, "legacy-cancel-fund-01")
-        order = e.place("seller", "sell", "KEN/USD", "limit", 5, 10, 1,
+        LocalDemoFunder(e.ledger).grant("seller", "DEMO_BASE", 5, "legacy-cancel-fund-01")
+        order = e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 5, 10, 1,
                         idempotency_key="legacy-cancel-order-01")
         e.cancel(order["order"]["id"], "seller", "legacy-cancel-key-01")
-        self.assertEqual(e.balances_snapshot("seller")["KEN"]["available_units"], 5)
-        self.assertEqual(e.balances_snapshot("seller")["KEN"]["reserved_units"], 0)
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["available_units"], 5)
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["reserved_units"], 0)
 
-    def test_invalid_order_fields_and_fixture_funding_is_test_only(self):
-        e = Engine(allow_test_funding=True)
+    def test_invalid_order_fields_and_only_demo_assets_are_accepted(self):
+        e = Engine()
         self.addCleanup(e.close)
-        e.issue_test_fixture("seller", "KEN", 5, "legacy-invalid-fund-01")
-        disabled = Engine()
-        self.addCleanup(disabled.close)
+        LocalDemoFunder(e.ledger).grant("seller", "DEMO_BASE", 5, "legacy-invalid-fund-01")
         with self.assertRaises(ValueError):
-            disabled.issue_test_fixture("seller", "KEN", 1, "fixture-disabled-02")
-        with self.assertRaises(ValueError):
-            e.place("seller", "sideways", "KEN/USD", "limit", 1, 1, 1,
+            e.place("seller", "sideways", "DEMO_BASE/DEMO_QUOTE", "limit", 1, 1, 1,
                     idempotency_key="invalid-side-0001")
         with self.assertRaises(ValueError):
-            e.place("seller", "sell", "KEN/USD", "stop", 1, 1, 1,
+            e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "stop", 1, 1, 1,
                     idempotency_key="invalid-kind-0001")
         with self.assertRaises(ValueError):
-            e.place("seller", "sell", "KEN/USD", "limit", float("nan"), 1, 1,
+            e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", float("nan"), 1, 1,
                     idempotency_key="invalid-float-0001")
+        with self.assertRaises(ValueError):
+            e.place("seller", "sell", "KEN/USD", "limit", 1, 1, 1,
+                    idempotency_key="invalid-real-pair-01")
         self.assertEqual(e.orders_snapshot(), [])
-        self.assertEqual(e.balances_snapshot("seller")["KEN"]["available_units"], 5)
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["available_units"], 5)
 
     def test_limit_buy_price_improvement_releases_surplus(self):
-        e = Engine(allow_test_funding=True)
+        e = Engine()
         self.addCleanup(e.close)
-        e.issue_test_fixture("seller", "KEN", 5, "improve-seller-fund-01")
-        e.issue_test_fixture("buyer", "USD", 100, "improve-buyer-fund-01")
-        e.place("seller", "sell", "KEN/USD", "limit", 5, 10, 1,
+        funder = LocalDemoFunder(e.ledger)
+        funder.grant("seller", "DEMO_BASE", 5, "improve-seller-fund-01")
+        funder.grant("buyer", "DEMO_QUOTE", 100, "improve-buyer-fund-01")
+        e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 5, 10, 1,
                 idempotency_key="improve-ask-order-01")
-        order = e.place("buyer", "buy", "KEN/USD", "limit", 4, 12, 1,
+        order = e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 4, 12, 1,
                         idempotency_key="improve-bid-order-01")
         self.assertEqual(order["order"]["status"], "filled")
-        self.assertEqual(e.balances_snapshot("buyer")["KEN"]["available_units"], 4)
-        self.assertEqual(e.balances_snapshot("buyer")["USD"]["available_units"], 60)
-        self.assertEqual(e.balances_snapshot("buyer")["USD"]["reserved_units"], 0)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_BASE"]["available_units"], 4)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["available_units"], 60)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["reserved_units"], 0)
 
     def test_partial_limit_buy_cancel_returns_all_remaining_reserve(self):
-        e = Engine(allow_test_funding=True)
+        e = Engine()
         self.addCleanup(e.close)
-        e.issue_test_fixture("seller", "KEN", 2, "partial-seller-fund-01")
-        e.issue_test_fixture("buyer", "USD", 100, "partial-buyer-fund-01")
-        e.place("seller", "sell", "KEN/USD", "limit", 2, 10, 1,
+        funder = LocalDemoFunder(e.ledger)
+        funder.grant("seller", "DEMO_BASE", 2, "partial-seller-fund-01")
+        funder.grant("buyer", "DEMO_QUOTE", 100, "partial-buyer-fund-01")
+        e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 2, 10, 1,
                 idempotency_key="partial-ask-order-01")
-        order = e.place("buyer", "buy", "KEN/USD", "limit", 4, 12, 1,
+        order = e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 4, 12, 1,
                         idempotency_key="partial-bid-order-01")
         self.assertEqual(order["order"]["status"], "partially_filled")
         self.assertEqual(order["order"]["reserved_units"], 24)
         e.cancel(order["order"]["id"], "buyer", "partial-cancel-key-01")
-        self.assertEqual(e.balances_snapshot("buyer")["USD"]["available_units"], 80)
-        self.assertEqual(e.balances_snapshot("buyer")["USD"]["reserved_units"], 0)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["available_units"], 80)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["reserved_units"], 0)
 
 
 class TestModules(unittest.TestCase):
@@ -367,14 +370,17 @@ class TestHttpIntegration(unittest.TestCase):
     def test_backend_exchange_funding_is_disabled_and_shield(self):
         request = urllib.request.Request(
             self.api_url + "/exchange/deposit-demo",
-            data=json.dumps({"user": "no-funds", "asset": "KEN", "amount_units": 5}).encode(),
+            data=json.dumps({"user": "no-funds", "asset": "DEMO_BASE", "amount_units": 5}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request, timeout=5)
         self.assertEqual(error.exception.code, 410)
-        self.assertEqual(get(self.api_url + "/exchange/balances/no-funds")["balances"], {})
+        balance = get(self.api_url + "/exchange/balances/no-funds")
+        self.assertEqual(balance["environment"], "DEMO")
+        self.assertIs(balance["demo_only"], True)
+        self.assertEqual(balance["balances"], {})
         sh = post(self.api_url + "/shield/check", {"to": "bad", "amount": 1, "fee": 0})
         self.assertEqual(sh["level"], "blocked")
 

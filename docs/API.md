@@ -18,9 +18,20 @@ The node’s schema-v2 file stores the ledger plus derived snapshots. At startup
 
 Default local backend: `http://127.0.0.1:8000` (`KENAN_NODE_URL` points to the node).
 
-- `GET /health`, `/backend/balance/<address>` (live node proxy), `/exchange/book?pair=KEN/USD-DEMO`, `/exchange/trades`, `/exchange/orders`.
-- `POST /exchange/deposit-demo`, `/exchange/orders`, `/exchange/orders/<id>/cancel`.
+- `GET /health`, `/backend/balance/<address>` (live node proxy), `/exchange/book?pair=DEMO_BASE/DEMO_QUOTE`, `/exchange/trades?user=<local-id>`, `/exchange/orders?user=<local-id>`, `/exchange/balances/<local-id>`.
+- `POST /exchange/orders` accepts integer `qty_units`; limit orders use integer `price_num`/`price_den`, and market buys require an integer `quote_budget_units`. Every order and cancellation requires an `Idempotency-Key` header.
+- `/exchange/deposit-demo`, `/exchange/deposit` and `/exchange/withdraw` return HTTP 410; unknown `/exchange/*` routes are not available. All Exchange routes accept loopback callers only, and every Exchange response is marked `environment=DEMO`, `demo_only=true`, `test_only=true`.
 - `POST /shield/check`, `/intelligence/ask`, `/intelligence/draft`, `/pay/invoice`, `/pay/receipt`, `/circles`, `/circles/<id>/request`, `/academy/account`, `/insights`, `/governance/propose`, `/bridge/transfer` (503, disabled).
 - `GET /admin/status` uses `X-Admin-Token: $KENAN_ADMIN_TOKEN`, else returns 503/403.
 
-`POST /pay/receipt` records a caller-provided transaction-hash claim as `pending-verification`; it does not query or verify that transaction against the node. The exchange remains DEMO-only and in-memory.
+The exchange is a persistent local SQLite test ledger at `data/demo-exchange.sqlite3` by default; it is separate from Python devnet and Polkadot chain balances. Symbols are only `DEMO_BASE` and `DEMO_QUOTE`, and all amounts are opaque integer units with no KEN decimal mapping. The order book contains only submitted limit orders; there is no reference-price feed or fabricated liquidity. No fee is charged by the HTTP service. Test-only fee scenarios are exercised in engine tests, not an approved fee policy.
+
+The only DEMO funding facility is the local operator command below. It is not imported by the HTTP app and has no API route or Android button. It defaults to the same local DEMO database so the funded ledger is available to a local backend; grant IDs are idempotent, each user/asset gets at most one grant of 10,000 units, and the global cap is 100,000 raw DEMO units across assets. These raw units are not monetary values.
+
+```bash
+python3 -m backend.exchange.demo_funding grant \\
+  --user tester --asset DEMO_BASE --amount-units 100 \\
+  --grant-id local-demo-run-01 --i-understand-demo-only
+```
+
+`POST /pay/receipt` records a caller-provided transaction-hash claim as `pending-verification`; it does not query or verify that transaction against the node. Real deposits, withdrawals, chain settlement and custody are not implemented.

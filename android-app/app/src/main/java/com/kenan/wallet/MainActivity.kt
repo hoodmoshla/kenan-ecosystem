@@ -484,30 +484,14 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun addDemoCredits(asset: String) {
-        val current = wallet ?: return
-        if (backendUrl.isBlank() || demoLoading) {
-            demoError = app.getString(R.string.demo_backend_unavailable)
-            return
-        }
-        demoLoading = true
-        demoError = null
-        demoMessage = null
-        val amount = if (asset == "KEN") 100.0 else 1000.0
-        viewModelScope.launch {
-            try {
-                DemoExchangeApi.depositDemo(backendUrl, current.address, asset, amount)
-                demoMessage = app.getString(R.string.demo_action_complete)
-                demoSnapshot = DemoExchangeApi.marketSnapshot(backendUrl, current.address, DEMO_PAIR)
-            } catch (_: Exception) {
-                demoError = app.getString(R.string.demo_backend_unavailable)
-            } finally {
-                demoLoading = false
-            }
-        }
-    }
-
-    fun placeDemoOrder(side: String, kind: String, quantity: Double, price: Double?) {
+    fun placeDemoOrder(
+        side: String,
+        kind: String,
+        quantityUnits: Long,
+        priceNum: Long?,
+        priceDen: Long?,
+        quoteBudgetUnits: Long?
+    ) {
         val current = wallet ?: return
         if (demoLoading) return
         if (backendUrl.isBlank()) {
@@ -519,7 +503,10 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         demoMessage = null
         viewModelScope.launch {
             try {
-                DemoExchangeApi.placeOrder(backendUrl, current.address, side, DEMO_PAIR, kind, quantity, price)
+                DemoExchangeApi.placeOrder(
+                    backendUrl, current.address, side, DEMO_PAIR, kind,
+                    quantityUnits, priceNum, priceDen, quoteBudgetUnits
+                )
                 demoMessage = app.getString(R.string.demo_action_complete)
                 demoSnapshot = DemoExchangeApi.marketSnapshot(backendUrl, current.address, DEMO_PAIR)
             } catch (_: Exception) {
@@ -885,7 +872,7 @@ class WalletViewModel(application: Application) : AndroidViewModel(application) 
         IllegalStateException("ambiguous", cause)
 
     companion object {
-        const val DEMO_PAIR = "KEN/USD-DEMO"
+        const val DEMO_PAIR = "DEMO_BASE/DEMO_QUOTE"
         const val NETWORK_PYTHON = "python-devnet"
         const val NETWORK_POLKADOT = "polkadot-sdk-local"
     }
@@ -1255,7 +1242,7 @@ private fun MarketsScreen(vm: WalletViewModel) {
                 val last = vm.demoSnapshot?.trades?.lastOrNull()
                 if (last != null) {
                     Text(stringResource(R.string.last_trade), color = Muted, style = MaterialTheme.typography.bodySmall)
-                    Text(stringResource(R.string.last_trade_price, formatDecimal(last.price)), style = MaterialTheme.typography.headlineSmall, color = Emerald, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.last_trade_price, formatRational(last.priceNum, last.priceDen)), style = MaterialTheme.typography.headlineSmall, color = Emerald, fontWeight = FontWeight.Bold)
                 } else {
                     Text(stringResource(R.string.no_trades), color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
@@ -1272,7 +1259,7 @@ private fun MarketsScreen(vm: WalletViewModel) {
                     AppCard {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(stringResource(R.string.chart_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            PriceSparkline(snapshot.trades.map { it.price }, Modifier.fillMaxWidth().height(110.dp))
+                            PriceSparkline(snapshot.trades.map { it.chartPrice }, Modifier.fillMaxWidth().height(110.dp))
                             Text(stringResource(R.string.demo_market_note), color = Muted, style = MaterialTheme.typography.labelSmall)
                         }
                     }
@@ -1317,13 +1304,15 @@ private fun BookCell(entry: DemoBookEntry?, tint: Color, modifier: Modifier = Mo
         Text("—", modifier = modifier.padding(vertical = 3.dp), color = Muted)
     } else {
         Text(
-            "${formatDecimal(entry.price ?: 0.0)}   ${formatDecimal(entry.quantity)}",
+            "${formatRational(entry.priceNum, entry.priceDen)}   ${entry.qtyUnits}",
             modifier = modifier.padding(vertical = 3.dp),
             color = tint,
             style = MaterialTheme.typography.bodySmall
         )
     }
 }
+
+private fun formatRational(numerator: Long, denominator: Long): String = "$numerator/$denominator"
 
 @Composable
 private fun RecentDemoTradesCard(snapshot: DemoMarketSnapshot) {
@@ -1336,8 +1325,8 @@ private fun RecentDemoTradesCard(snapshot: DemoMarketSnapshot) {
                 snapshot.trades.takeLast(8).asReversed().forEachIndexed { index, trade ->
                     if (index > 0) HorizontalDivider(color = Border)
                     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(formatDecimal(trade.price), modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
-                        Text(formatDecimal(trade.quantity) + " KEN", color = Muted)
+                        Text(formatRational(trade.priceNum, trade.priceDen), modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                        Text("${trade.qtyUnits} DEMO_BASE", color = Muted)
                         if (trade.demoOnly) DemoBadge()
                     }
                 }
@@ -1351,8 +1340,17 @@ private fun TradeScreen(vm: WalletViewModel) {
     LaunchedEffect(vm.backendUrl, vm.wallet?.address) { vm.refreshDemoExchange() }
     var side by rememberSaveable { mutableStateOf("buy") }
     var kind by rememberSaveable { mutableStateOf("limit") }
-    var quantity by rememberSaveable { mutableStateOf("") }
-    var price by rememberSaveable { mutableStateOf("") }
+    var quantityUnits by rememberSaveable { mutableStateOf("") }
+    var priceNum by rememberSaveable { mutableStateOf("") }
+    var priceDen by rememberSaveable { mutableStateOf("") }
+    var quoteBudgetUnits by rememberSaveable { mutableStateOf("") }
+    val parsedQty = quantityUnits.toLongOrNull()
+    val parsedPriceNum = if (kind == "limit") priceNum.toLongOrNull() else null
+    val parsedPriceDen = if (kind == "limit") priceDen.toLongOrNull() else null
+    val parsedQuoteBudget = if (kind == "market" && side == "buy") quoteBudgetUnits.toLongOrNull() else null
+    val canSubmit = parsedQty != null && parsedQty > 0 &&
+        (kind != "limit" || (parsedPriceNum != null && parsedPriceNum > 0 && parsedPriceDen != null && parsedPriceDen > 0)) &&
+        (kind != "market" || side != "buy" || (parsedQuoteBudget != null && parsedQuoteBudget > 0))
     val snapshot = vm.demoSnapshot
     val userOrders = snapshot?.orders?.filter { it.user == vm.wallet?.address }.orEmpty()
     Column(
@@ -1376,34 +1374,53 @@ private fun TradeScreen(vm: WalletViewModel) {
                     FilterChip(selected = kind == "market", onClick = { kind = "market" }, label = { Text(stringResource(R.string.market_order)) })
                 }
                 OutlinedTextField(
-                    value = quantity,
-                    onValueChange = { quantity = it },
+                    value = quantityUnits,
+                    onValueChange = { quantityUnits = it },
                     label = { Text(stringResource(R.string.order_quantity)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
                 if (kind == "limit") {
                     OutlinedTextField(
-                        value = price,
-                        onValueChange = { price = it },
-                        label = { Text(stringResource(R.string.limit_price)) },
+                        value = priceNum,
+                        onValueChange = { priceNum = it },
+                        label = { Text(stringResource(R.string.limit_price_num)) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    OutlinedTextField(
+                        value = priceDen,
+                        onValueChange = { priceDen = it },
+                        label = { Text(stringResource(R.string.limit_price_den)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                }
+                if (kind == "market" && side == "buy") {
+                    OutlinedTextField(
+                        value = quoteBudgetUnits,
+                        onValueChange = { quoteBudgetUnits = it },
+                        label = { Text(stringResource(R.string.market_quote_budget)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
                 }
                 Text(stringResource(R.string.demo_reset_notice), color = Muted, style = MaterialTheme.typography.bodySmall)
                 Button(
                     onClick = {
-                        val qty = quantity.toDoubleOrNull()
-                        val limitPrice = if (kind == "limit") price.toDoubleOrNull() else null
-                        if (qty != null && qty > 0 && (kind == "market" || (limitPrice != null && limitPrice > 0))) {
-                            vm.placeDemoOrder(side, kind, qty, limitPrice)
+                        parsedQty?.let { qty ->
+                            if (canSubmit) {
+                                vm.placeDemoOrder(
+                                    side, kind, qty, parsedPriceNum, parsedPriceDen, parsedQuoteBudget
+                                )
+                            }
                         }
                     },
-                    enabled = !vm.demoLoading && quantity.toDoubleOrNull()?.let { it > 0 } == true &&
-                        (kind == "market" || price.toDoubleOrNull()?.let { it > 0 } == true),
+                    enabled = !vm.demoLoading && canSubmit,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (vm.demoLoading) stringResource(R.string.checking) else stringResource(R.string.place_order))
@@ -1423,10 +1440,10 @@ private fun TradeScreen(vm: WalletViewModel) {
                         if (index > 0) HorizontalDivider(color = Border)
                         Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("${order.side.uppercase(Locale.ROOT)} · ${formatDecimal(order.quantity)} KEN", fontWeight = FontWeight.Medium)
-                                Text(stringResource(R.string.order_status, localizedOrderStatus(order.status), formatDecimal(order.filled)), color = Muted, style = MaterialTheme.typography.bodySmall)
+                                Text("${order.side.uppercase(Locale.ROOT)} · ${order.qtyUnits} DEMO_BASE", fontWeight = FontWeight.Medium)
+                                Text(stringResource(R.string.order_status, localizedOrderStatus(order.status), order.filledUnits.toString()), color = Muted, style = MaterialTheme.typography.bodySmall)
                             }
-                            if (order.status == "open") {
+                            if (order.status == "open" || order.status == "partially_filled") {
                                 TextButton(onClick = { vm.cancelDemoOrder(order.id) }, enabled = !vm.demoLoading) {
                                     Text(stringResource(R.string.cancel_order), color = Negative)
                                 }
@@ -1448,10 +1465,10 @@ private fun DemoBalancesCard(vm: WalletViewModel, snapshot: DemoMarketSnapshot?)
                 Text(stringResource(R.string.demo_balances), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 DemoBadge()
             }
-            listOf("KEN", "USD-DEMO").forEach { asset ->
+            listOf("DEMO_BASE", "DEMO_QUOTE").forEach { asset ->
                 val balance = balances[asset]
-                val available = if (snapshot == null) "—" else formatDecimal(balance?.available ?: 0.0)
-                val reserved = if (snapshot == null) "—" else formatDecimal(balance?.reserved ?: 0.0)
+                val available = if (snapshot == null) "—" else (balance?.availableUnits ?: 0L).toString()
+                val reserved = if (snapshot == null) "—" else (balance?.reservedUnits ?: 0L).toString()
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(asset, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
                     Column(horizontalAlignment = Alignment.End) {
@@ -1462,14 +1479,6 @@ private fun DemoBalancesCard(vm: WalletViewModel, snapshot: DemoMarketSnapshot?)
             }
             HorizontalDivider(color = Border)
             Text(stringResource(R.string.demo_reset_notice), color = Muted, style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { vm.addDemoCredits("KEN") }, enabled = !vm.demoLoading, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.deposit_ken_demo))
-                }
-                OutlinedButton(onClick = { vm.addDemoCredits("USD-DEMO") }, enabled = !vm.demoLoading, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.deposit_usd_demo))
-                }
-            }
             vm.demoError?.let { ErrorText(it) }
             vm.demoMessage?.let { SuccessText(it) }
         }

@@ -11,12 +11,21 @@ import hashlib
 import json
 import re
 import time
-import uuid
 from collections import defaultdict
 from math import gcd
 from typing import Any
 
+from .audit import append_demo_audit, GENESIS_HASH
 from .ledger import DoubleEntryLedger, LedgerError, MAX_INT64
+from .schema import (
+    DEMO_ASSETS,
+    DEMO_ENVIRONMENT,
+    MAX_DEMO_ACCOUNT_ASSET_UNITS,
+    MAX_DEMO_FEE_BPS,
+    MAX_DEMO_TOTAL_ISSUANCE_UNITS,
+    demo_user_account,
+    ensure_demo_schema,
+)
 
 _USER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$")
 _ASSET_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,15}$")
@@ -43,89 +52,27 @@ class OrderNotFound(ExchangeError):
 class Engine:
     """Persistent order book and settlement engine for local test use only."""
 
-    def __init__(self, db_path: str = ":memory:", allow_test_funding: bool = False):
+    def __init__(self, db_path: str = ":memory:", *, demo_fee_bps: int = 0):
+        self.demo_fee_bps = self._fee_bps(demo_fee_bps)
         self.ledger = DoubleEntryLedger(db_path)
         self.conn = self.ledger.conn
         self._lock = self.ledger._lock
-        # This switch is intended only for unit-test fixtures, never HTTP config.
-        self.allow_test_funding = bool(allow_test_funding)
-        self._create_schema()
+        ensure_demo_schema(self.conn)
         self.reconcile()
 
-    def _create_schema(self) -> None:
-        with self._lock:
-            self.conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS exchange_orders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user TEXT NOT NULL,
-                    pair TEXT NOT NULL,
-                    base_asset TEXT NOT NULL,
-                    quote_asset TEXT NOT NULL,
-                    side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
-                    kind TEXT NOT NULL CHECK(kind IN ('limit', 'market')),
-                    qty_units INTEGER NOT NULL CHECK(qty_units > 0),
-                    limit_price_num INTEGER,
-                    limit_price_den INTEGER,
-                    quote_budget_units INTEGER,
-                    filled_units INTEGER NOT NULL DEFAULT 0 CHECK(filled_units >= 0),
-                    reserved_units INTEGER NOT NULL CHECK(reserved_units >= 0),
-                    status TEXT NOT NULL CHECK(status IN ('open', 'partially_filled', 'filled', 'cancelled')),
-                    cancel_reason TEXT,
-                    created_ns INTEGER NOT NULL,
-                    updated_ns INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS exchange_orders_book
-                    ON exchange_orders(pair, side, status, id);
-                CREATE INDEX IF NOT EXISTS exchange_orders_user
-                    ON exchange_orders(user, id);
-                CREATE TABLE IF NOT EXISTS exchange_trades (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pair TEXT NOT NULL,
-                    base_asset TEXT NOT NULL,
-                    quote_asset TEXT NOT NULL,
-                    qty_units INTEGER NOT NULL CHECK(qty_units > 0),
-                    quote_units INTEGER NOT NULL CHECK(quote_units > 0),
-                    price_num INTEGER NOT NULL CHECK(price_num > 0),
-                    price_den INTEGER NOT NULL CHECK(price_den > 0),
-                    buyer_user TEXT NOT NULL,
-                    seller_user TEXT NOT NULL,
-                    buy_order_id INTEGER NOT NULL REFERENCES exchange_orders(id),
-                    sell_order_id INTEGER NOT NULL REFERENCES exchange_orders(id),
-                    maker_order_id INTEGER NOT NULL REFERENCES exchange_orders(id),
-                    taker_order_id INTEGER NOT NULL REFERENCES exchange_orders(id),
-                    created_ns INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS exchange_trades_pair ON exchange_trades(pair, id);
-                CREATE TABLE IF NOT EXISTS exchange_idempotency (
-                    user TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL,
-                    request_hash TEXT NOT NULL,
-                    response_json TEXT NOT NULL,
-                    created_ns INTEGER NOT NULL,
-                    PRIMARY KEY(user, idempotency_key)
-                );
-                CREATE TABLE IF NOT EXISTS exchange_audit (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_id TEXT NOT NULL UNIQUE,
-                    event_type TEXT NOT NULL,
-                    user TEXT NOT NULL,
-                    reference TEXT NOT NULL,
-                    created_ns INTEGER NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    previous_hash TEXT NOT NULL,
-                    event_hash TEXT NOT NULL
-                );
-                CREATE TRIGGER IF NOT EXISTS exchange_audit_no_update
-                    BEFORE UPDATE ON exchange_audit BEGIN
-                        SELECT RAISE(ABORT, 'exchange audit is immutable');
-                    END;
-                CREATE TRIGGER IF NOT EXISTS exchange_audit_no_delete
-                    BEFORE DELETE ON exchange_audit BEGIN
-                        SELECT RAISE(ABORT, 'exchange audit is immutable');
-                    END;
-                """
-            )
+    @staticmethod
+    def _fee_bps(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_DEMO_FEE_BPS:
+            raise ExchangeError(f"demo_fee_bps must be an integer in 0..{MAX_DEMO_FEE_BPS}")
+        return value
+
+    def _demo_fee_for_quote(self, quote_units: int, fee_bps: int | None = None) -> int:
+        rate = self.demo_fee_bps if fee_bps is None else self._fee_bps(fee_bps)
+        return quote_units * rate // 10_000 if rate else 0
+
+    def _limit_buy_reserve(self, price_num: int, price_den: int, qty_units: int, fee_bps: int) -> int:
+        principal = self._ceil_div(price_num * qty_units, price_den)
+        return principal + self._demo_fee_for_quote(principal, fee_bps)
 
     @staticmethod
     def _int_units(value: Any, field: str, *, positive: bool = True) -> int:
@@ -157,10 +104,10 @@ class Engine:
     @staticmethod
     def _pair(pair: Any) -> tuple[str, str, str]:
         if not isinstance(pair, str) or pair.count("/") != 1:
-            raise ExchangeError("pair must use BASE/QUOTE symbols")
+            raise ExchangeError("pair must use DEMO_BASE/DEMO_QUOTE symbols")
         base, quote = pair.split("/")
-        if not _ASSET_RE.fullmatch(base) or not _ASSET_RE.fullmatch(quote) or base == quote:
-            raise ExchangeError("pair symbols must be distinct uppercase identifiers")
+        if (base, quote) != ("DEMO_BASE", "DEMO_QUOTE") or base not in DEMO_ASSETS or quote not in DEMO_ASSETS:
+            raise ExchangeError("the only enabled pair is DEMO_BASE/DEMO_QUOTE")
         return base + "/" + quote, base, quote
 
     @staticmethod
@@ -169,7 +116,7 @@ class Engine:
 
     @staticmethod
     def _account(user: str, asset: str, bucket: str) -> str:
-        return f"user:{user}:{asset}:{bucket}"
+        return demo_user_account(user, asset, bucket)
 
     @staticmethod
     def _canonical(value: Any) -> str:
@@ -187,32 +134,7 @@ class Engine:
         return num // common, den // common
 
     def _append_audit(self, event_type: str, user: str, reference: str, payload: dict) -> dict:
-        if not self.conn.in_transaction:
-            raise LedgerError("audit append requires an active transaction")
-        previous = self.conn.execute(
-            "SELECT event_hash FROM exchange_audit ORDER BY seq DESC LIMIT 1"
-        ).fetchone()
-        previous_hash = str(previous[0]) if previous else "0" * 64
-        event_id = uuid.uuid4().hex
-        created_ns = time.time_ns()
-        payload_json = self._canonical(payload)
-        hash_payload = {
-            "event_id": event_id,
-            "event_type": event_type,
-            "user": user,
-            "reference": reference,
-            "created_ns": created_ns,
-            "payload": payload,
-            "previous_hash": previous_hash,
-        }
-        event_hash = self._hash(hash_payload)
-        self.conn.execute(
-            """INSERT INTO exchange_audit
-               (event_id, event_type, user, reference, created_ns, payload_json, previous_hash, event_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (event_id, event_type, user, reference, created_ns, payload_json, previous_hash, event_hash),
-        )
-        return {"event_id": event_id, "event_hash": event_hash}
+        return append_demo_audit(self.conn, event_type, user, reference, payload)
 
     def record_rejected_event(self, event_type: str, *, user: str = "", reference: str = "http", payload: dict | None = None) -> None:
         """Persist a rejected/disabled mutating request without changing balances."""
@@ -221,7 +143,7 @@ class Engine:
 
     def _idempotent_replay(self, user: str, key: str, request_hash: str) -> dict | None:
         row = self.conn.execute(
-            "SELECT request_hash, response_json FROM exchange_idempotency WHERE user = ? AND idempotency_key = ?",
+            "SELECT request_hash, response_json FROM exchange_idempotency WHERE environment = 'DEMO' AND user = ? AND idempotency_key = ?",
             (user, key),
         ).fetchone()
         if not row:
@@ -235,41 +157,9 @@ class Engine:
 
     def _remember_idempotency(self, user: str, key: str, request_hash: str, response: dict) -> None:
         self.conn.execute(
-            "INSERT INTO exchange_idempotency(user, idempotency_key, request_hash, response_json, created_ns) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO exchange_idempotency(environment, user, idempotency_key, request_hash, response_json, created_ns) VALUES ('DEMO', ?, ?, ?, ?, ?)",
             (user, key, request_hash, self._canonical(response), time.time_ns()),
         )
-
-    def issue_test_fixture(self, user: str, asset: str, amount_units: Any, idempotency_key: str) -> dict:
-        """Internal unit-test fixture only; intentionally has no HTTP route."""
-        if not self.allow_test_funding:
-            raise ExchangeError("test fixture funding is disabled")
-        user = self._user(user)
-        if not isinstance(asset, str) or not _ASSET_RE.fullmatch(asset):
-            raise ExchangeError("asset must be an uppercase identifier")
-        amount = self._int_units(amount_units, "amount_units")
-        key = self._key(idempotency_key)
-        payload = {"operation": "test_fixture_credit", "user": user, "asset": asset, "amount_units": amount}
-        request_hash = self._hash(payload)
-        with self.ledger.transaction():
-            replay = self._idempotent_replay(user, key, request_hash)
-            if replay is not None:
-                return replay
-            event_hash = self._hash(["fixture", user, key])[:40]
-            self.ledger.post(
-                f"test-fixture:{event_hash}",
-                "test_fixture_credit",
-                f"test-fixture:{user}:{asset}",
-                [
-                    (f"external:test-fixture:{asset}", asset, -amount),
-                    (self._account(user, asset, "available"), asset, amount),
-                ],
-                {"test_fixture_only": True, "idempotency_key_hash": self._hash(key)},
-            )
-            response = {"user": user, "asset": asset, "amount_units": amount, "test_fixture_only": True}
-            self._append_audit("test_fixture_credit", user, f"fixture:{asset}", response)
-            self._remember_idempotency(user, key, request_hash, response)
-            self.reconcile()
-            return response
 
     def place(
         self,
@@ -297,7 +187,7 @@ class Engine:
                 raise ExchangeError("limit orders require price_num/price_den and no quote_budget_units")
             num, den = self._price_pair(price_num, price_den)
             reserve_asset = quote if side == "buy" else base
-            reserve = self._ceil_div(num * qty, den) if side == "buy" else qty
+            reserve = self._limit_buy_reserve(num, den, qty, self.demo_fee_bps) if side == "buy" else qty
             if reserve > MAX_INT64:
                 raise ExchangeError("required reservation exceeds SQLite integer range")
             budget = None
@@ -317,9 +207,9 @@ class Engine:
                 reserve_asset, reserve = base, qty
 
         payload = {
-            "operation": "place_order", "user": user, "side": side, "pair": pair,
+            "environment": DEMO_ENVIRONMENT, "operation": "place_order", "user": user, "side": side, "pair": pair,
             "kind": kind, "qty_units": qty, "price_num": num, "price_den": den,
-            "quote_budget_units": budget,
+            "quote_budget_units": budget, "demo_fee_bps_test_only": self.demo_fee_bps,
         }
         request_hash = self._hash(payload)
         with self.ledger.transaction():
@@ -332,11 +222,11 @@ class Engine:
             now = time.time_ns()
             cursor = self.conn.execute(
                 """INSERT INTO exchange_orders
-                   (user, pair, base_asset, quote_asset, side, kind, qty_units,
+                   (environment, user, pair, base_asset, quote_asset, side, kind, qty_units,
                     limit_price_num, limit_price_den, quote_budget_units,
-                    filled_units, reserved_units, status, cancel_reason, created_ns, updated_ns)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'open', NULL, ?, ?)""",
-                (user, pair, base, quote, side, kind, qty, num, den, budget, reserve, now, now),
+                    fee_bps, filled_units, reserved_units, status, cancel_reason, created_ns, updated_ns)
+                   VALUES ('DEMO', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'open', NULL, ?, ?)""",
+                (user, pair, base, quote, side, kind, qty, num, den, budget, self.demo_fee_bps, reserve, now, now),
             )
             order_id = int(cursor.lastrowid)
             self.ledger.post(
@@ -347,7 +237,7 @@ class Engine:
                     (available_account, reserve_asset, -reserve),
                     (self._account(user, reserve_asset, "reserved"), reserve_asset, reserve),
                 ],
-                {"order_id": order_id, "side": side, "kind": kind},
+                {"environment": DEMO_ENVIRONMENT, "order_id": order_id, "side": side, "kind": kind},
             )
             self._append_audit("order_accepted", user, f"order:{order_id}", payload)
             trade_ids = self._match(order_id)
@@ -357,7 +247,10 @@ class Engine:
             response = {
                 "order": self._order_view(order),
                 "trades": [self._trade_view(self._get_trade(trade_id)) for trade_id in trade_ids],
-                "fee_policy": "unconfigured_no_fee_charged",
+                "fee_policy": ("DEMO_test_only_quote_fee" if self.demo_fee_bps else "unconfigured_no_fee_charged"),
+                "demo_fee_bps_test_only": self.demo_fee_bps,
+                "environment": DEMO_ENVIRONMENT,
+                "demo_only": True,
                 "test_only": True,
                 "idempotent_replay": False,
             }
@@ -380,6 +273,9 @@ class Engine:
     @staticmethod
     def _order_view(order: dict) -> dict:
         return {
+            "environment": DEMO_ENVIRONMENT,
+            "demo_only": True,
+            "test_only": True,
             "id": int(order["id"]),
             "user": order["user"],
             "pair": order["pair"],
@@ -389,6 +285,7 @@ class Engine:
             "filled_units": int(order["filled_units"]),
             "remaining_units": int(order["qty_units"]) - int(order["filled_units"]),
             "reserved_units": int(order["reserved_units"]),
+            "demo_fee_bps_test_only": int(order["fee_bps"]),
             "status": order["status"],
             "cancel_reason": order["cancel_reason"],
             "limit_price": ({"num": int(order["limit_price_num"]), "den": int(order["limit_price_den"])}
@@ -400,10 +297,16 @@ class Engine:
     @staticmethod
     def _trade_view(trade: dict) -> dict:
         return {
+            "environment": DEMO_ENVIRONMENT,
+            "demo_only": True,
+            "test_only": True,
             "id": int(trade["id"]),
             "pair": trade["pair"],
             "qty_units": int(trade["qty_units"]),
             "quote_units": int(trade["quote_units"]),
+            "fee_units": int(trade["fee_units"]),
+            "fee_asset": str(trade["fee_asset"]),
+            "demo_fee_bps_test_only": int(trade["fee_bps"]),
             "price": {"num": int(trade["price_num"]), "den": int(trade["price_den"])},
             "buyer": trade["buyer_user"],
             "seller": trade["seller_user"],
@@ -449,11 +352,22 @@ class Engine:
                 cap = min(remaining, maker_remaining)
                 price_num = int(maker["limit_price_num"])
                 price_den = int(maker["limit_price_den"])
-                if incoming["side"] == "buy" and incoming["kind"] == "market":
-                    affordable = int(incoming["reserved_units"]) * price_den // price_num
-                    cap = min(cap, affordable)
                 step = price_den // gcd(price_num, price_den)
-                candidate_qty = (cap // step) * step
+                max_steps = cap // step
+                if incoming["side"] == "buy" and incoming["kind"] == "market":
+                    low, high = 0, max_steps
+                    budget = int(incoming["reserved_units"])
+                    fee_bps = int(incoming["fee_bps"])
+                    while low < high:
+                        middle = (low + high + 1) // 2
+                        candidate = middle * step
+                        principal = candidate * price_num // price_den
+                        if principal + self._demo_fee_for_quote(principal, fee_bps) <= budget:
+                            low = middle
+                        else:
+                            high = middle - 1
+                    max_steps = low
+                candidate_qty = max_steps * step
                 if candidate_qty <= 0:
                     continue
                 quote_cost = candidate_qty * price_num // price_den
@@ -475,22 +389,23 @@ class Engine:
         seller = incoming if incoming["side"] == "sell" else maker
         if buyer["user"] == seller["user"]:
             raise LedgerError("self-trades must not be settled")
+        fee_bps = int(buyer["fee_bps"])
+        fee_units = self._demo_fee_for_quote(quote_cost, fee_bps)
         if buyer["kind"] == "market":
-            quote_debit = quote_cost
+            quote_debit = quote_cost + fee_units
             improvement = 0
-            buyer_new_reserved = int(buyer["reserved_units"]) - quote_cost
+            buyer_new_reserved = int(buyer["reserved_units"]) - quote_debit
         else:
             old_reserved = int(buyer["reserved_units"])
             new_buyer_filled = int(buyer["filled_units"]) + qty
             buyer_remaining = int(buyer["qty_units"]) - new_buyer_filled
-            target_reserved = self._ceil_div(
-                int(buyer["limit_price_num"]) * buyer_remaining,
-                int(buyer["limit_price_den"]),
+            target_reserved = self._limit_buy_reserve(
+                int(buyer["limit_price_num"]), int(buyer["limit_price_den"]), buyer_remaining, fee_bps
             )
-            release = old_reserved - target_reserved - quote_cost
+            release = old_reserved - target_reserved - quote_cost - fee_units
             if release < 0:
                 raise LedgerError("buyer reservation is insufficient for exact settlement")
-            quote_debit = quote_cost + release
+            quote_debit = quote_cost + fee_units + release
             improvement = release
             buyer_new_reserved = target_reserved
 
@@ -500,12 +415,14 @@ class Engine:
         now = time.time_ns()
         trade_cursor = self.conn.execute(
             """INSERT INTO exchange_trades
-               (pair, base_asset, quote_asset, qty_units, quote_units, price_num, price_den,
+               (environment, pair, base_asset, quote_asset, qty_units, quote_units, price_num, price_den,
+                fee_units, fee_asset, fee_bps, buyer_reserved_debit_units, buyer_release_units,
                 buyer_user, seller_user, buy_order_id, sell_order_id, maker_order_id, taker_order_id, created_ns)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES ('DEMO', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 incoming["pair"], incoming["base_asset"], incoming["quote_asset"], qty, quote_cost,
                 int(maker["limit_price_num"]), int(maker["limit_price_den"]),
+                fee_units, buyer["quote_asset"], fee_bps, quote_debit, improvement,
                 buyer["user"], seller["user"], int(buyer["id"]), int(seller["id"]), maker_id, incoming_id, now,
             ),
         )
@@ -518,12 +435,25 @@ class Engine:
         ]
         if improvement:
             entries.append((self._account(buyer["user"], buyer["quote_asset"], "available"), buyer["quote_asset"], improvement))
+        if fee_units:
+            entries.append((f"system:DEMO_FEES:{buyer['quote_asset']}", buyer["quote_asset"], fee_units))
         self.ledger.post(
             f"exchange-trade:{trade_id}",
             "trade_settlement",
             f"trade:{trade_id}",
             entries,
-            {"trade_id": trade_id, "buy_order_id": int(buyer["id"]), "sell_order_id": int(seller["id"]), "fee_policy": "unconfigured"},
+            {
+                "environment": DEMO_ENVIRONMENT,
+                "trade_id": trade_id,
+                "buy_order_id": int(buyer["id"]),
+                "sell_order_id": int(seller["id"]),
+                "principal_quote_units": quote_cost,
+                "fee_units": fee_units,
+                "fee_asset": buyer["quote_asset"],
+                "demo_fee_bps_test_only": fee_bps,
+                "buyer_reserved_debit_units": quote_debit,
+                "buyer_release_units": improvement,
+            },
         )
         incoming_new_filled = int(incoming["filled_units"]) + qty
         maker_new_filled = int(maker["filled_units"]) + qty
@@ -573,7 +503,7 @@ class Engine:
                     (self._account(order["user"], asset, "reserved"), asset, -remaining_hold),
                     (self._account(order["user"], asset, "available"), asset, remaining_hold),
                 ],
-                {"order_id": int(order["id"]), "unspent_or_unfilled_units": remaining_hold},
+                {"environment": DEMO_ENVIRONMENT, "order_id": int(order["id"]), "unspent_or_unfilled_units": remaining_hold},
             )
         status = "filled" if int(order["filled_units"]) == int(order["qty_units"]) else "cancelled"
         reason = None if status == "filled" else "market_remainder_not_resting"
@@ -590,7 +520,7 @@ class Engine:
         user = self._user(user)
         oid = self._int_units(order_id, "order_id")
         key = self._key(idempotency_key)
-        payload = {"operation": "cancel_order", "user": user, "order_id": oid}
+        payload = {"environment": DEMO_ENVIRONMENT, "operation": "cancel_order", "user": user, "order_id": oid}
         request_hash = self._hash(payload)
         with self.ledger.transaction():
             replay = self._idempotent_replay(user, key, request_hash)
@@ -611,23 +541,29 @@ class Engine:
                             (self._account(user, asset, "reserved"), asset, -held),
                             (self._account(user, asset, "available"), asset, held),
                         ],
-                        {"order_id": oid},
+                        {"environment": DEMO_ENVIRONMENT, "order_id": oid},
                     )
                 self.conn.execute(
                     "UPDATE exchange_orders SET reserved_units = 0, status = 'cancelled', cancel_reason = 'user_cancelled', updated_ns = ? WHERE id = ?",
                     (time.time_ns(), oid),
                 )
-                self._append_audit("order_cancelled", user, f"order:{oid}", {"released_units": held})
+                self._append_audit("order_cancelled", user, f"order:{oid}", {"environment": DEMO_ENVIRONMENT, "released_units": held})
             else:
                 self._append_audit("order_cancel_noop", user, f"order:{oid}", {"status": order["status"]})
-            result = {"order": self._order_view(self._get_order(oid)), "test_only": True, "idempotent_replay": False}
+            result = {
+                "environment": DEMO_ENVIRONMENT,
+                "demo_only": True,
+                "order": self._order_view(self._get_order(oid)),
+                "test_only": True,
+                "idempotent_replay": False,
+            }
             self._remember_idempotency(user, key, request_hash, result)
             self.reconcile()
             return result
 
     def balances_snapshot(self, user: str) -> dict:
         user = self._user(user)
-        prefix = f"user:{user}:"
+        prefix = f"user:DEMO:{user}:"
         with self._lock:
             rows = self.conn.execute(
                 "SELECT DISTINCT account, asset FROM ledger_entries WHERE substr(account, 1, ?) = ?",
@@ -643,7 +579,13 @@ class Engine:
             free = self.ledger.balance(self._account(user, asset, "available"), asset)
             reserved = self.ledger.balance(self._account(user, asset, "reserved"), asset)
             if free or reserved:
-                result[asset] = {"available_units": free, "reserved_units": reserved}
+                result[asset] = {
+                    "environment": DEMO_ENVIRONMENT,
+                    "demo_only": True,
+                    "test_only": True,
+                    "available_units": free,
+                    "reserved_units": reserved,
+                }
         return result
 
     def book(self, pair: str) -> dict:
@@ -662,11 +604,21 @@ class Engine:
         def view(order: dict) -> dict:
             return {
                 "id": int(order["id"]),
+                "environment": DEMO_ENVIRONMENT,
+                "demo_only": True,
+                "test_only": True,
                 "price": {"num": int(order["limit_price_num"]), "den": int(order["limit_price_den"])},
                 "qty_units": int(order["qty_units"]) - int(order["filled_units"]),
             }
-        return {"pair": pair, "asks": [view(o) for o in asks], "bids": [view(o) for o in bids],
-                "test_only": True, "price_source": "submitted_limit_orders_only"}
+        return {
+            "environment": DEMO_ENVIRONMENT,
+            "demo_only": True,
+            "pair": pair,
+            "asks": [view(o) for o in asks],
+            "bids": [view(o) for o in bids],
+            "test_only": True,
+            "price_source": "submitted_limit_orders_only",
+        }
 
     def orders_snapshot(self, user: str | None = None) -> list[dict]:
         with self._lock:
@@ -696,12 +648,15 @@ class Engine:
 
     def _verify_audit(self) -> int:
         rows = self.conn.execute("SELECT * FROM exchange_audit ORDER BY seq").fetchall()
-        previous = "0" * 64
+        previous = GENESIS_HASH
         for row in rows:
             if str(row["previous_hash"]) != previous:
                 raise LedgerError(f"exchange audit hash chain broken at {row['event_id']}")
+            if str(row["environment"]) != DEMO_ENVIRONMENT:
+                raise LedgerError(f"exchange audit event {row['event_id']} is not tagged DEMO")
             payload = json.loads(row["payload_json"])
             obj = {
+                "environment": DEMO_ENVIRONMENT,
                 "event_id": str(row["event_id"]),
                 "event_type": str(row["event_type"]),
                 "user": str(row["user"]),
@@ -720,6 +675,27 @@ class Engine:
         """Re-derive reserved balances from active orders and verify all journals."""
         with self._lock:
             ledger_report = self.ledger.verify()
+            for transaction in self.conn.execute("SELECT event_id, metadata_json FROM ledger_transactions"):
+                metadata = json.loads(transaction["metadata_json"])
+                if metadata.get("environment") != DEMO_ENVIRONMENT:
+                    raise LedgerError(f"ledger event {transaction['event_id']} is not tagged DEMO")
+            for entry in self.conn.execute("SELECT DISTINCT account, asset FROM ledger_entries"):
+                account, asset = str(entry["account"]), str(entry["asset"])
+                if asset not in DEMO_ASSETS:
+                    raise LedgerError(f"non-DEMO asset found in exchange ledger: {asset}")
+                parts = account.split(":")
+                if parts[0] == "user":
+                    if len(parts) != 5 or parts[1] != "DEMO" or parts[3] != asset or parts[4] not in ("available", "reserved"):
+                        raise LedgerError(f"user ledger account is not DEMO-namespaced: {account}")
+                    self._user(parts[2])
+                elif parts[0] == "external":
+                    if parts != ["external", "DEMO_CLEARING", asset]:
+                        raise LedgerError(f"unknown DEMO clearing account: {account}")
+                elif parts[0] == "system":
+                    if asset != "DEMO_QUOTE" or parts != ["system", "DEMO_FEES", asset]:
+                        raise LedgerError(f"unknown DEMO system account: {account}")
+                else:
+                    raise LedgerError(f"unrecognized exchange ledger account: {account}")
             expected: dict[tuple[str, str], int] = defaultdict(int)
             rows = self.conn.execute("SELECT * FROM exchange_orders ORDER BY id").fetchall()
             order_ids = set()
@@ -727,6 +703,12 @@ class Engine:
             for row in rows:
                 order = dict(row)
                 order_id = int(order["id"])
+                if order["environment"] != DEMO_ENVIRONMENT:
+                    raise LedgerError(f"order {order_id} is not tagged DEMO")
+                pair, base, quote = self._pair(order["pair"])
+                if pair != order["pair"] or (base, quote) != (order["base_asset"], order["quote_asset"]):
+                    raise LedgerError(f"order {order_id} has inconsistent DEMO assets")
+                fee_bps = self._fee_bps(int(order["fee_bps"]))
                 order_ids.add(order_id)
                 orders_by_id[order_id] = order
                 qty = int(order["qty_units"])
@@ -741,8 +723,8 @@ class Engine:
                         raise LedgerError(f"invalid active order state in order {order_id}")
                     asset = order["quote_asset"] if order["side"] == "buy" else order["base_asset"]
                     remaining = qty - filled
-                    required_hold = (self._ceil_div(int(order["limit_price_num"]) * remaining,
-                                                    int(order["limit_price_den"]))
+                    required_hold = (self._limit_buy_reserve(int(order["limit_price_num"]),
+                                                             int(order["limit_price_den"]), remaining, fee_bps)
                                      if order["side"] == "buy" else remaining)
                     if held != required_hold:
                         raise LedgerError(f"order {order_id} reservation does not match its remaining quantity")
@@ -753,12 +735,28 @@ class Engine:
                     raise LedgerError(f"terminal order {order_id} retains reserved funds")
                 if order["kind"] == "market" and order["status"] not in ("filled", "cancelled"):
                     raise LedgerError(f"market order {order_id} was left resting")
-                reserve_event = self.conn.execute(
-                    "SELECT 1 FROM ledger_transactions WHERE event_id = ?",
-                    (f"order-reserve:{order_id}",),
-                ).fetchone()
+                reserve_event = self.ledger.event(f"order-reserve:{order_id}")
                 if not reserve_event:
                     raise LedgerError(f"order {order_id} lacks its reservation journal")
+                if order["kind"] == "market":
+                    initial_hold = (int(order["quote_budget_units"]) if order["side"] == "buy"
+                                    else int(order["qty_units"]))
+                elif order["side"] == "buy":
+                    initial_hold = self._limit_buy_reserve(int(order["limit_price_num"]),
+                                                           int(order["limit_price_den"]), qty, fee_bps)
+                else:
+                    initial_hold = qty
+                reserve_asset = order["quote_asset"] if order["side"] == "buy" else order["base_asset"]
+                initial_entries = {
+                    (self._account(order["user"], reserve_asset, "available"), reserve_asset): -initial_hold,
+                    (self._account(order["user"], reserve_asset, "reserved"), reserve_asset): initial_hold,
+                }
+                actual_initial_entries = {
+                    (entry["account"], entry["asset"]): int(entry["amount_units"])
+                    for entry in reserve_event["entries"]
+                }
+                if actual_initial_entries != initial_entries:
+                    raise LedgerError(f"order {order_id} initial reservation journal does not match its request")
 
             reserved_rows = self.conn.execute(
                 "SELECT DISTINCT account, asset FROM ledger_entries WHERE account LIKE 'user:%:reserved'"
@@ -780,6 +778,11 @@ class Engine:
             filled_by_order: dict[int, int] = defaultdict(int)
             for trade in trade_rows:
                 trade_id = int(trade["id"])
+                if trade["environment"] != DEMO_ENVIRONMENT:
+                    raise LedgerError(f"trade {trade_id} is not tagged DEMO")
+                pair, base, quote = self._pair(trade["pair"])
+                if pair != trade["pair"] or (base, quote) != (trade["base_asset"], trade["quote_asset"]):
+                    raise LedgerError(f"trade {trade_id} has inconsistent DEMO assets")
                 trade_ids.add(trade_id)
                 qty = int(trade["qty_units"])
                 price_num = int(trade["price_num"])
@@ -801,6 +804,48 @@ class Engine:
                     raise LedgerError(f"trade {trade_id} parties differ from its orders")
                 if int(trade["maker_order_id"]) not in (buy_id, sell_id) or int(trade["taker_order_id"]) not in (buy_id, sell_id):
                     raise LedgerError(f"trade {trade_id} maker/taker references are invalid")
+                fee_bps = self._fee_bps(int(trade["fee_bps"]))
+                fee_units = self._demo_fee_for_quote(quote_units, fee_bps)
+                buyer_release = int(trade["buyer_release_units"])
+                buyer_debit = int(trade["buyer_reserved_debit_units"])
+                if fee_bps != int(buy_order["fee_bps"]):
+                    raise LedgerError(f"trade {trade_id} fee does not match the buyer order")
+                if str(trade["fee_asset"]) != quote or int(trade["fee_units"]) != fee_units:
+                    raise LedgerError(f"trade {trade_id} DEMO fee is inconsistent")
+                if buyer_release < 0 or buyer_debit != quote_units + fee_units + buyer_release:
+                    raise LedgerError(f"trade {trade_id} buyer debit does not reconcile")
+                expected_entries = {
+                    (self._account(str(trade["seller_user"]), base, "reserved"), base): -qty,
+                    (self._account(str(trade["buyer_user"]), base, "available"), base): qty,
+                    (self._account(str(trade["buyer_user"]), quote, "reserved"), quote): -buyer_debit,
+                    (self._account(str(trade["seller_user"]), quote, "available"), quote): quote_units,
+                }
+                if buyer_release:
+                    expected_entries[(self._account(str(trade["buyer_user"]), quote, "available"), quote)] = buyer_release
+                if fee_units:
+                    expected_entries[(f"system:DEMO_FEES:{quote}", quote)] = fee_units
+                settlement = self.ledger.event(f"exchange-trade:{trade_id}")
+                if not settlement or settlement["event_type"] != "trade_settlement":
+                    raise LedgerError(f"trade {trade_id} lacks its settlement journal")
+                actual_entries = {
+                    (entry["account"], entry["asset"]): int(entry["amount_units"])
+                    for entry in settlement["entries"]
+                }
+                if actual_entries != expected_entries:
+                    raise LedgerError(f"trade {trade_id} settlement entries do not match its trade row")
+                metadata = settlement["metadata"]
+                expected_metadata = {
+                    "environment": DEMO_ENVIRONMENT,
+                    "trade_id": trade_id,
+                    "principal_quote_units": quote_units,
+                    "fee_units": fee_units,
+                    "fee_asset": quote,
+                    "demo_fee_bps_test_only": fee_bps,
+                    "buyer_reserved_debit_units": buyer_debit,
+                    "buyer_release_units": buyer_release,
+                }
+                if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+                    raise LedgerError(f"trade {trade_id} settlement metadata does not reconcile")
                 filled_by_order[buy_id] += qty
                 filled_by_order[sell_id] += qty
             for order_id, order in orders_by_id.items():
@@ -812,10 +857,51 @@ class Engine:
             settled_ids = {int(str(row[0]).split(":", 1)[1]) for row in settled_refs}
             if trade_ids != settled_ids:
                 raise LedgerError("trade rows and settlement journals do not reconcile")
+            grant_rows = self.conn.execute("SELECT * FROM exchange_demo_funding ORDER BY created_ns, grant_id").fetchall()
+            total_issued = 0
+            for grant in grant_rows:
+                grant_id = str(grant["grant_id"])
+                user = self._user(str(grant["user"]))
+                asset = str(grant["asset"])
+                amount = int(grant["amount_units"])
+                if grant["environment"] != DEMO_ENVIRONMENT or asset not in DEMO_ASSETS:
+                    raise LedgerError(f"DEMO grant {grant_id} has an invalid environment or asset")
+                if amount <= 0 or amount > MAX_DEMO_ACCOUNT_ASSET_UNITS:
+                    raise LedgerError(f"DEMO grant {grant_id} exceeds its per-account cap")
+                total_issued += amount
+                event_id = str(grant["ledger_event_id"])
+                event = self.ledger.event(event_id)
+                if not event or event["event_type"] != "demo_funding_grant" or event["reference"] != event_id:
+                    raise LedgerError(f"DEMO grant {grant_id} lacks its funding journal")
+                expected_grant_entries = {
+                    (f"external:DEMO_CLEARING:{asset}", asset): -amount,
+                    (self._account(user, asset, "available"), asset): amount,
+                }
+                actual_grant_entries = {
+                    (entry["account"], entry["asset"]): int(entry["amount_units"])
+                    for entry in event["entries"]
+                }
+                if actual_grant_entries != expected_grant_entries:
+                    raise LedgerError(f"DEMO grant {grant_id} journal does not match its grant record")
+                metadata = event["metadata"]
+                if any(metadata.get(key) != value for key, value in {
+                    "environment": DEMO_ENVIRONMENT,
+                    "demo_only": True,
+                    "grant_id": grant_id,
+                    "user": user,
+                    "asset": asset,
+                    "amount_units": amount,
+                    "request_hash": str(grant["request_hash"]),
+                }.items()):
+                    raise LedgerError(f"DEMO grant {grant_id} journal metadata does not reconcile")
+            if total_issued > MAX_DEMO_TOTAL_ISSUANCE_UNITS:
+                raise LedgerError("historical DEMO issuance exceeds the fixed global cap")
             audit_count = self._verify_audit()
             return {
                 "ledger_transactions": ledger_report["transactions"],
                 "ledger_entries": ledger_report["entries"],
+                "demo_funding_grants": len(grant_rows),
+                "demo_issued_raw_units": total_issued,
                 "orders": len(order_ids),
                 "trades": len(trade_ids),
                 "audit_events": audit_count,
