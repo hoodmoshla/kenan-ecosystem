@@ -4,7 +4,7 @@ This is a test-only project status, not a production-readiness or financial-safe
 
 ## Current branch and verification
 
-The source commit tested in CI is [`f4c4256`](https://github.com/hoodmoshla/kenan-ecosystem/commit/f4c4256bd4e3635d53853971f3e8749f4ca3f9ae). The branch tip is documentation-only commit [`1a83856`](https://github.com/hoodmoshla/kenan-ecosystem/commit/1a838565972439a6d669f8959072ec2888d40d85); no source code changed after CI passed. Both remain on `feat/kenan-exchange-ledger-2026-10-27`, neither is merged into `main`, and repository visibility was not changed.
+The source commit tested in CI is [`f4c4256`](https://github.com/hoodmoshla/kenan-ecosystem/commit/f4c4256bd4e3635d53853971f3e8749f4ca3f9ae). Later commits on `feat/kenan-exchange-ledger-2026-10-27` are documentation-only; no source code changed after CI passed. The branch remains separate from `main`, and repository visibility was not changed.
 
 Locally, `python3 -m unittest discover -s tests -v` passed **67/67**, covering account/session handling, ownership isolation, DEMO order execution and recovery, ledger invariants, and observer rejection/replay cases. `cargo test --locked --manifest-path rust-core/Cargo.toml` passed **2/2**; Shell, Node.js and Python syntax checks and `git diff --check` also passed.
 
