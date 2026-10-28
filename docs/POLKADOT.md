@@ -97,12 +97,14 @@ Use balanced immutable ledger entries with an audit trail; distinguish available
 ### 4.4 Funding and market administration — current state
 
 - No chain deposit, withdrawal, or chain settlement is implemented. Local DEMO grants are not deposits and are never represented as KEN, USD, or chain balances. Any future test-chain deposit needs a separate observer, actual transaction verification, confirmation policy, and approval before crediting.
+- The exchange now has an observation-only boundary (`backend/exchange/chain_deposits.py`) and a test harness that can consume finalized Runtime observations. It pins chain/runtime identity and display asset properties, hashes the signed extrinsic bytes, matches the successful event phase/call/signer/recipient/amount, and requires an explicit AccountId32 beneficiary binding. It only records `pending_settlement_review`; it never credits a trading balance. A continuously running RPC watcher and a settlement/approval flow are still not implemented.
+- The Kenan test Runtime currently advertises `UNIT` with 12 decimals. This is a test display property only; it is not an approved KEN asset or precision. No KEN mapping is inferred or applied, and no balance is converted between chain units and DEMO units.
 - No withdrawal route or withdrawal simulation is enabled. Do not add real custody, treasury keys, leverage, margin, or derivatives. Any later real withdrawal design needs independent security review, multi-party approval, limits, monitoring, and incident response.
 - The only current administrative endpoint is token-protected `/admin/status`; no market/asset/fee mutation endpoint exists. Any future admin action must be role-limited and audited. Define assets and rules before enabling new pairs. Do not fabricate liquidity or random prices.
 
 ### 4.5 Security and operation
 
-Separate user/admin authentication and permissions; protect sessions; add rate limits, audit logs, secret management, backups with restore tests, health/error/transaction-lag monitoring, and concurrency/load/recovery tests. No default credentials or committed secrets. Keep the exchange closed and test-only; automated tests alone are not a security audit or legal approval.
+The local DEMO service now has salted PBKDF2 password hashes, hashed/expiring bearer sessions, ownership checks for account reads and writes, and a trader-only order/cancel permission. Continue to treat this as test-only: add rate limits, account recovery, stronger administrative provisioning, operational secret management, backups with restore tests, health/error/finality-lag monitoring, and concurrency/load/recovery reviews before any real service. No default credentials or committed secrets. Automated tests are not a security audit or legal approval.
 
 **Local Phase 4 gate:** spot order and ledger invariants pass integration, concurrency, idempotency and recovery tests; every user-visible action is backed by the DEMO service or explicitly unavailable; no real-money operation is enabled. Passing this gate does not authorize chain deposits or production trading.
 

@@ -1,4 +1,4 @@
-"""Versioned schema and hard boundaries for the local DEMO exchange only."""
+"""Versioned schema and hard boundaries for the local DEMO exchange."""
 from __future__ import annotations
 
 import sqlite3
@@ -8,7 +8,8 @@ DEMO_ASSETS = ("DEMO_BASE", "DEMO_QUOTE")
 MAX_DEMO_ACCOUNT_ASSET_UNITS = 10_000
 MAX_DEMO_TOTAL_ISSUANCE_UNITS = 100_000
 MAX_DEMO_FEE_BPS = 1_000
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_PREVIOUS_SCHEMA_VERSION = 1
 
 
 def demo_user_account(user: str, asset: str, bucket: str) -> str:
@@ -129,12 +130,87 @@ CREATE TRIGGER exchange_demo_funding_no_delete BEFORE DELETE ON exchange_demo_fu
 END;
 """
 
+V2_SCHEMA_SQL = """
+CREATE TABLE exchange_accounts (
+    user TEXT PRIMARY KEY,
+    password_salt_hex TEXT,
+    password_hash_hex TEXT,
+    pbkdf2_iterations INTEGER NOT NULL DEFAULT 0,
+    role TEXT NOT NULL CHECK(role IN ('trader', 'auditor', 'operator')),
+    status TEXT NOT NULL CHECK(status IN ('active', 'legacy_blocked')),
+    created_ns INTEGER NOT NULL,
+    CHECK (
+        (status = 'active' AND password_salt_hex IS NOT NULL AND password_hash_hex IS NOT NULL AND pbkdf2_iterations > 0)
+        OR
+        (status = 'legacy_blocked' AND password_salt_hex IS NULL AND password_hash_hex IS NULL AND pbkdf2_iterations = 0)
+    )
+);
+CREATE TABLE exchange_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user TEXT NOT NULL REFERENCES exchange_accounts(user),
+    created_ns INTEGER NOT NULL,
+    expires_ns INTEGER NOT NULL,
+    revoked_ns INTEGER,
+    CHECK(expires_ns > created_ns)
+);
+CREATE INDEX exchange_sessions_user_expiry ON exchange_sessions(user, expires_ns);
+
+CREATE TABLE chain_deposit_bindings (
+    binding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user TEXT NOT NULL REFERENCES exchange_accounts(user),
+    genesis_hash TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    beneficiary_address TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+    created_ns INTEGER NOT NULL,
+    UNIQUE(genesis_hash, asset_id, beneficiary_address)
+);
+CREATE TABLE chain_deposit_observations (
+    observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purpose TEXT NOT NULL DEFAULT 'observation_only' CHECK(purpose = 'observation_only'),
+    genesis_hash TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    block_height INTEGER NOT NULL CHECK(block_height >= 0),
+    block_hash TEXT NOT NULL,
+    tx_hash TEXT NOT NULL,
+    extrinsic_index INTEGER NOT NULL CHECK(extrinsic_index >= 0),
+    event_index INTEGER NOT NULL CHECK(event_index >= 0),
+    sender_address TEXT NOT NULL,
+    beneficiary_address TEXT NOT NULL,
+    account_id TEXT NOT NULL REFERENCES exchange_accounts(user),
+    amount_base_units TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending_settlement_review' CHECK(status = 'pending_settlement_review'),
+    ledger_credit_event_id TEXT CHECK(ledger_credit_event_id IS NULL),
+    created_ns INTEGER NOT NULL,
+    UNIQUE(genesis_hash, tx_hash, event_index)
+);
+CREATE INDEX chain_deposit_observations_account ON chain_deposit_observations(account_id, observation_id);
+CREATE TRIGGER chain_deposit_observations_no_update BEFORE UPDATE ON chain_deposit_observations BEGIN
+    SELECT RAISE(ABORT, 'chain observations are immutable and never ledger credits');
+END;
+CREATE TRIGGER chain_deposit_observations_no_delete BEFORE DELETE ON chain_deposit_observations BEGIN
+    SELECT RAISE(ABORT, 'chain observations are immutable');
+END;
+CREATE TABLE chain_observer_cursors (
+    watcher_id TEXT PRIMARY KEY,
+    genesis_hash TEXT NOT NULL,
+    last_height INTEGER NOT NULL CHECK(last_height >= 0),
+    last_block_hash TEXT NOT NULL,
+    updated_ns INTEGER NOT NULL
+);
+"""
+
 _REQUIRED_TABLES = {
     "exchange_orders",
     "exchange_trades",
     "exchange_idempotency",
     "exchange_audit",
     "exchange_demo_funding",
+    "exchange_accounts",
+    "exchange_sessions",
+    "chain_deposit_bindings",
+    "chain_deposit_observations",
+    "chain_observer_cursors",
 }
 _LEGACY_TABLES = {
     "exchange_orders",
@@ -142,8 +218,14 @@ _LEGACY_TABLES = {
     "exchange_idempotency",
     "exchange_audit",
 }
-_ENVIRONMENT_TABLES = _REQUIRED_TABLES
-_REQUIRED_IMMUTABILITY_TRIGGERS = {
+_ENVIRONMENT_TABLES = {
+    "exchange_orders",
+    "exchange_trades",
+    "exchange_idempotency",
+    "exchange_audit",
+    "exchange_demo_funding",
+}
+_V1_IMMUTABILITY_TRIGGERS = {
     "exchange_trades_no_update",
     "exchange_trades_no_delete",
     "exchange_idempotency_no_update",
@@ -153,37 +235,87 @@ _REQUIRED_IMMUTABILITY_TRIGGERS = {
     "exchange_demo_funding_no_update",
     "exchange_demo_funding_no_delete",
 }
+_V2_IMMUTABILITY_TRIGGERS = _V1_IMMUTABILITY_TRIGGERS | {
+    "chain_deposit_observations_no_update",
+    "chain_deposit_observations_no_delete",
+}
 
 
 class DemoSchemaError(RuntimeError):
     """The SQLite file is not a recognized, isolated DEMO exchange database."""
 
 
-def ensure_demo_schema(conn: sqlite3.Connection) -> None:
-    """Create the DEMO schema once, or fail closed on legacy/partial schemas."""
-    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    tables = {
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {
         str(row[0])
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
+
+
+def _validate_schema(conn: sqlite3.Connection, *, version: int) -> None:
+    tables = _table_names(conn)
+    required = _REQUIRED_TABLES if version == SCHEMA_VERSION else _REQUIRED_TABLES - {
+        "exchange_accounts", "exchange_sessions", "chain_deposit_bindings",
+        "chain_deposit_observations", "chain_observer_cursors",
+    }
+    missing = required - tables
+    if missing:
+        raise DemoSchemaError(f"DEMO database is incomplete; missing tables: {sorted(missing)}")
+    for table in _ENVIRONMENT_TABLES:
+        columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "environment" not in columns:
+            raise DemoSchemaError(f"DEMO database table {table} lacks its environment tag")
+    triggers = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+    }
+    required_triggers = _V2_IMMUTABILITY_TRIGGERS if version == SCHEMA_VERSION else _V1_IMMUTABILITY_TRIGGERS
+    missing_triggers = required_triggers - triggers
+    if missing_triggers:
+        raise DemoSchemaError(f"DEMO database is missing immutable-record triggers: {sorted(missing_triggers)}")
+
+
+def _legacy_users(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        """SELECT user FROM exchange_orders
+           UNION SELECT user FROM exchange_demo_funding
+           UNION SELECT buyer_user AS user FROM exchange_trades
+           UNION SELECT seller_user AS user FROM exchange_trades"""
+    ).fetchall()
+    return sorted({str(row[0]) for row in rows if row[0]})
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    users = _legacy_users(conn)
+    inserts = "\n".join(
+        "INSERT INTO exchange_accounts(user, password_salt_hex, password_hash_hex, pbkdf2_iterations, role, status, created_ns) "
+        f"VALUES ({_sql_literal(user)}, NULL, NULL, 0, 'trader', 'legacy_blocked', 0);"
+        for user in users
+    )
+    script = "BEGIN IMMEDIATE;\n" + V2_SCHEMA_SQL + "\n" + inserts + "\nPRAGMA user_version = 2;\nCOMMIT;"
+    try:
+        conn.executescript(script)
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+
+def ensure_demo_schema(conn: sqlite3.Connection) -> None:
+    """Create or migrate the DEMO schema without claiming legacy user balances."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    tables = _table_names(conn)
     if version == SCHEMA_VERSION:
-        missing = _REQUIRED_TABLES - tables
-        if missing:
-            raise DemoSchemaError(f"DEMO database is incomplete; missing tables: {sorted(missing)}")
-        for table in _ENVIRONMENT_TABLES:
-            columns = {
-                str(row[1])
-                for row in conn.execute(f"PRAGMA table_info({table})")
-            }
-            if "environment" not in columns:
-                raise DemoSchemaError(f"DEMO database table {table} lacks its environment tag")
-        triggers = {
-            str(row[0])
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
-        }
-        missing_triggers = _REQUIRED_IMMUTABILITY_TRIGGERS - triggers
-        if missing_triggers:
-            raise DemoSchemaError(f"DEMO database is missing immutable-record triggers: {sorted(missing_triggers)}")
+        _validate_schema(conn, version=SCHEMA_VERSION)
+        return
+    if version == _PREVIOUS_SCHEMA_VERSION:
+        _validate_schema(conn, version=_PREVIOUS_SCHEMA_VERSION)
+        _migrate_v1_to_v2(conn)
+        _validate_schema(conn, version=SCHEMA_VERSION)
         return
     if version != 0:
         raise DemoSchemaError(f"unsupported DEMO database schema version: {version}")
@@ -196,9 +328,11 @@ def ensure_demo_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(
             "BEGIN IMMEDIATE;\n"
             + DEMO_SCHEMA_SQL
-            + f"\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+            + "\nPRAGMA user_version = 1;\nCOMMIT;"
         )
     except BaseException:
         if conn.in_transaction:
             conn.rollback()
         raise
+    _migrate_v1_to_v2(conn)
+    _validate_schema(conn, version=SCHEMA_VERSION)

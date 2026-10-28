@@ -31,7 +31,7 @@ jobs:
 
   kenan-runtime-tests:
     name: Kenan Runtime test-only overlay integration
-    if: ${{ (github.head_ref || github.ref_name) == 'feat/kenan-runtime-customization-2026-10-27' }}
+    if: ${{ (github.head_ref || github.ref_name) == 'feat/kenan-runtime-customization-2026-10-27' || (github.head_ref || github.ref_name) == 'feat/kenan-exchange-ledger-2026-10-27' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -93,7 +93,7 @@ jobs:
 
   polkadot-sdk-local-node:
     name: Polkadot SDK local node integration and restart recovery
-    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' && (github.head_ref || github.ref_name) != 'feat/kenan-exchange-ledger-2026-10-27' }}
+    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -137,7 +137,7 @@ jobs:
 
   android-debug:
     name: Android debug APK
-    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' && (github.head_ref || github.ref_name) != 'feat/kenan-exchange-ledger-2026-10-27' }}
+    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' }}
     runs-on: ubuntu-24.04
     needs: polkadot-sdk-local-node
     steps:

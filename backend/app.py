@@ -18,6 +18,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from backend.exchange.auth import (  # noqa: E402
+    AccountPolicyError, AuthenticationError, ExchangeAuth, bearer_token,
+)
 from network_utils import validate_bind_host  # noqa: E402
 from backend.exchange.engine import (  # noqa: E402
     Engine, ExchangeError, IdempotencyConflict, InsufficientFunds, OrderNotFound,
@@ -30,6 +33,7 @@ from backend.modules.features import (  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXCHANGE_DB = os.path.join(ROOT, "data", "demo-exchange.sqlite3")
 ENGINE = Engine(EXCHANGE_DB)
+AUTH = ExchangeAuth(ENGINE.ledger)
 CIRCLES: dict = {}
 GOV = Governance()
 NODE_URL = os.environ.get("KENAN_NODE_URL", "http://127.0.0.1:8545")
@@ -71,15 +75,42 @@ def make_handler():
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            if urlsplit(self.path).path.startswith("/exchange/"):
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
             self.end_headers()
             self.wfile.write(body)
 
         def _body(self):
             length = int(self.headers.get("Content-Length", 0))
             try:
-                return json.loads(self.rfile.read(length) or b"{}")
+                value = json.loads(self.rfile.read(length) or b"{}")
+                return value if isinstance(value, dict) else {}
             except json.JSONDecodeError:
                 return {}
+
+        def _exchange_principal(self):
+            token = bearer_token(self.headers.get("Authorization"))
+            try:
+                if token is None:
+                    raise AuthenticationError("authentication required")
+                return AUTH.principal(token)
+            except AuthenticationError:
+                try:
+                    ENGINE.record_rejected_event(
+                        "exchange_auth_denied",
+                        reference=urlsplit(self.path).path,
+                        payload={"reason": "missing_or_invalid_session"},
+                    )
+                except Exception:
+                    pass
+                self._send(401, {"error": "authentication required", "test_only": True})
+                return None
+
+        def _check_requested_user(self, requested, principal):
+            if requested is not None and requested != principal["user"]:
+                raise PermissionError("request is not authorized for another account")
+            return principal["user"]
 
         def _exchange_guard(self, path: str) -> bool:
             if not path.startswith("/exchange/") or exchange_client_allowed(self.client_address[0]):
@@ -95,10 +126,9 @@ def make_handler():
             self._send(403, {"error": "exchange API is restricted to loopback", "test_only": True})
             return False
 
-        def _exchange_error(self, error: Exception, path: str, body: dict | None = None):
-            user = (body or {}).get("user", "anonymous")
-            if not isinstance(user, str):
-                user = "anonymous"
+        def _exchange_error(self, error: Exception, path: str, body: dict | None = None, principal: dict | None = None):
+            # Never trust a client-supplied user identifier for the audit actor.
+            user = principal.get("user", "anonymous") if principal else "anonymous"
             try:
                 ENGINE.record_rejected_event(
                     "exchange_request_rejected",
@@ -108,7 +138,9 @@ def make_handler():
                 )
             except Exception:
                 pass
-            if isinstance(error, (InsufficientFunds, IdempotencyConflict)):
+            if isinstance(error, AuthenticationError):
+                code = 401
+            elif isinstance(error, (InsufficientFunds, IdempotencyConflict)):
                 code = 409
             elif isinstance(error, OrderNotFound):
                 code = 404
@@ -125,8 +157,15 @@ def make_handler():
             parsed = urlsplit(self.path)
             if not self._exchange_guard(parsed.path):
                 return
+            principal = None
+            if parsed.path.startswith("/exchange/") and parsed.path != "/exchange/book":
+                principal = self._exchange_principal()
+                if principal is None:
+                    return
             if parsed.path == "/health":
                 return self._send(200, {"ok": True, "service": "kenan-backend", "test_only": True})
+            if parsed.path == "/exchange/me":
+                return self._send(200, {"user": principal["user"], "role": principal["role"], "test_only": True})
             if parsed.path.startswith("/backend/balance/"):
                 addr = parsed.path.split("/")[-1]
                 try:
@@ -134,13 +173,16 @@ def make_handler():
                 except Exception as e:
                     return self._send(502, {"error": f"node unreachable: {e}"})
             if parsed.path.startswith("/exchange/balances/"):
-                user = unquote(parsed.path[len("/exchange/balances/"):])
+                try:
+                    user = self._check_requested_user(unquote(parsed.path[len("/exchange/balances/"):]), principal)
+                except Exception as e:
+                    return self._exchange_error(e, parsed.path, principal=principal)
                 try:
                     balances = ENGINE.balances_snapshot(user)
                     return self._send(200, {"user": user, "balances": balances, "test_only": True,
                                             "units": "integer ledger units; not mapped to chain decimals"})
                 except Exception as e:
-                    return self._exchange_error(e, parsed.path)
+                    return self._exchange_error(e, parsed.path, principal=principal)
             if parsed.path == "/exchange/book":
                 pair = parse_qs(parsed.query).get("pair", [""])[0]
                 try:
@@ -151,22 +193,20 @@ def make_handler():
                     return self._exchange_error(e, parsed.path)
             if parsed.path == "/exchange/trades":
                 users = parse_qs(parsed.query).get("user")
-                if not users or not users[0]:
-                    return self._send(400, {"error": "user query parameter is required", "test_only": True})
                 try:
-                    trades = ENGINE.trades_snapshot(users[0])
+                    user = self._check_requested_user(users[0] if users else None, principal)
+                    trades = ENGINE.trades_snapshot(user)
                     return self._send(200, {"trades": trades, "test_only": True})
                 except Exception as e:
-                    return self._exchange_error(e, parsed.path)
+                    return self._exchange_error(e, parsed.path, principal=principal)
             if parsed.path == "/exchange/orders":
                 users = parse_qs(parsed.query).get("user")
-                if not users or not users[0]:
-                    return self._send(400, {"error": "user query parameter is required", "test_only": True})
                 try:
-                    orders = ENGINE.orders_snapshot(users[0])
+                    user = self._check_requested_user(users[0] if users else None, principal)
+                    orders = ENGINE.orders_snapshot(user)
                     return self._send(200, {"orders": orders, "test_only": True})
                 except Exception as e:
-                    return self._exchange_error(e, parsed.path)
+                    return self._exchange_error(e, parsed.path, principal=principal)
             if parsed.path == "/admin/status":
                 token = os.environ.get("KENAN_ADMIN_TOKEN", "")
                 provided = self.headers.get("X-Admin-Token", "")
@@ -191,26 +231,48 @@ def make_handler():
             if not self._exchange_guard(path):
                 return
             b = self._body()
+            principal = None
+            if path.startswith("/exchange/") and path not in (
+                "/exchange/register", "/exchange/login",
+                "/exchange/deposit-demo", "/exchange/deposit", "/exchange/withdraw",
+            ):
+                principal = self._exchange_principal()
+                if principal is None:
+                    return
             try:
+                if path == "/exchange/register":
+                    if set(b) != {"username", "password"}:
+                        raise AccountPolicyError("registration requires username and password only")
+                    account = AUTH.register(b.get("username"), b.get("password"))
+                    return self._send(201, {"account": account, "test_only": True})
+                if path == "/exchange/login":
+                    if set(b) != {"username", "password"}:
+                        raise AuthenticationError("invalid username or password")
+                    session = AUTH.authenticate(b.get("username"), b.get("password"))
+                    return self._send(200, {"session": session, "test_only": True})
+                if path == "/exchange/logout":
+                    token = bearer_token(self.headers.get("Authorization"))
+                    AUTH.revoke(token)
+                    return self._send(200, {"logged_out": True, "test_only": True})
                 if path in ("/exchange/deposit-demo", "/exchange/deposit", "/exchange/withdraw"):
-                    user = b.get("user", "anonymous")
-                    if not isinstance(user, str):
-                        user = "anonymous"
                     try:
                         ENGINE.record_rejected_event(
-                            "funding_or_withdrawal_unavailable", user=user, reference=path,
+                            "funding_or_withdrawal_unavailable", user="anonymous", reference=path,
                             payload={"reason": "disabled; no exchange funds were changed"},
                         )
                     finally:
                         return self._send(410, {"error": "exchange deposits and withdrawals are unavailable",
                                                 "test_only": True})
                 if path == "/exchange/orders":
+                    if principal["role"] != "trader":
+                        raise PermissionError("this role cannot submit DEMO orders")
                     allowed = {"user", "side", "pair", "kind", "qty_units", "price_num", "price_den", "quote_budget_units"}
                     unexpected = set(b) - allowed
                     if unexpected:
                         raise ExchangeError(f"unsupported order fields: {', '.join(sorted(unexpected))}")
+                    user = self._check_requested_user(b.get("user"), principal)
                     result = ENGINE.place(
-                        b.get("user"), b.get("side"), b.get("pair"), b.get("kind", "limit"),
+                        user, b.get("side"), b.get("pair"), b.get("kind", "limit"),
                         b.get("qty_units"), b.get("price_num"), b.get("price_den"),
                         b.get("quote_budget_units"), self.headers.get("Idempotency-Key"),
                     )
@@ -219,7 +281,10 @@ def make_handler():
                     parts = path.strip("/").split("/")
                     if len(parts) != 4:
                         raise ExchangeError("invalid cancel route")
-                    result = ENGINE.cancel(parts[2], b.get("user"), self.headers.get("Idempotency-Key"))
+                    if principal["role"] != "trader":
+                        raise PermissionError("this role cannot cancel DEMO orders")
+                    user = self._check_requested_user(b.get("user"), principal)
+                    result = ENGINE.cancel(parts[2], user, self.headers.get("Idempotency-Key"))
                     return self._send(200, result)
                 if path.startswith("/exchange/"):
                     try:
@@ -258,7 +323,7 @@ def make_handler():
                     bridge_transfer()
             except Exception as e:
                 if path.startswith("/exchange/"):
-                    return self._exchange_error(e, path, b if isinstance(b, dict) else {})
+                    return self._exchange_error(e, path, principal=principal)
                 code = 503 if "BRIDGE DISABLED" in str(e) else 400
                 return self._send(code, {"error": str(e)})
             return self._send(404, {"error": "not found"})

@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import threading
+import uuid
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -368,6 +369,8 @@ class TestHttpIntegration(unittest.TestCase):
             server.server_close()
 
     def test_backend_exchange_funding_is_disabled_and_shield(self):
+        username = "no-funds-" + uuid.uuid4().hex
+        password = "local integration test password only"
         request = urllib.request.Request(
             self.api_url + "/exchange/deposit-demo",
             data=json.dumps({"user": "no-funds", "asset": "DEMO_BASE", "amount_units": 5}).encode(),
@@ -377,7 +380,14 @@ class TestHttpIntegration(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request, timeout=5)
         self.assertEqual(error.exception.code, 410)
-        balance = get(self.api_url + "/exchange/balances/no-funds")
+        post(self.api_url + "/exchange/register", {"username": username, "password": password})
+        session = post(self.api_url + "/exchange/login", {"username": username, "password": password})["session"]["token"]
+        balance_request = urllib.request.Request(
+            self.api_url + "/exchange/balances/" + username,
+            headers={"Authorization": f"Bearer {session}"},
+        )
+        with urllib.request.urlopen(balance_request, timeout=5) as response:
+            balance = json.loads(response.read().decode("utf-8"))
         self.assertEqual(balance["environment"], "DEMO")
         self.assertIs(balance["demo_only"], True)
         self.assertEqual(balance["balances"], {})

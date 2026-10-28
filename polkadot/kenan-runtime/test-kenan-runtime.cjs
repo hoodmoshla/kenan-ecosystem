@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const { ApiPromise, Keyring, WsProvider } = require('@polkadot/api');
 const { cryptoWaitReady } = require('@polkadot/util-crypto');
 
@@ -62,6 +63,90 @@ async function eventsForExtrinsic(api, blockHash, extrinsicHash) {
   return records.filter(({ phase }) =>
     phase.isApplyExtrinsic && phase.asApplyExtrinsic.toNumber() === index
   );
+}
+
+function pascalCase(value) {
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
+}
+
+function rawAccountId(api, value) {
+  return api.createType('AccountId32', value.toString()).toHex().toLowerCase();
+}
+
+async function finalizedObserverBundle(api, throughHeight, targetTxHash, identity) {
+  const genesisHash = (await api.rpc.chain.getBlockHash(0)).toHex().toLowerCase();
+  const assetId = `substrate:balances:native:${identity.tokenSymbol}:${identity.tokenDecimals}`;
+  const blocks = [];
+  for (let height = 0; height <= throughHeight; height += 1) {
+    const blockHash = (await api.rpc.chain.getBlockHash(height)).toHex();
+    const signedBlock = await api.rpc.chain.getBlock(blockHash);
+    const header = signedBlock.block.header;
+    assert.equal(header.number.toNumber(), height, `Unexpected canonical height at ${blockHash}`);
+    const records = await api.query.system.events.at(blockHash);
+    const transfers = [];
+    records.forEach(({ phase, event }, eventIndex) => {
+      if (event.section !== 'balances' || event.method !== 'Transfer' || !phase.isApplyExtrinsic) return;
+      const extrinsicIndex = phase.asApplyExtrinsic.toNumber();
+      const extrinsic = signedBlock.block.extrinsics[extrinsicIndex];
+      assert.ok(extrinsic, `Transfer event references missing extrinsic ${extrinsicIndex}`);
+      const success = records.some(({ phase: candidatePhase, event: candidateEvent }) =>
+        candidatePhase.isApplyExtrinsic &&
+        candidatePhase.asApplyExtrinsic.toNumber() === extrinsicIndex &&
+        candidateEvent.section === 'system' && candidateEvent.method === 'ExtrinsicSuccess'
+      );
+      const method = extrinsic.method;
+      const args = method.args;
+      const eventData = event.data;
+      transfers.push({
+        tx_hash: extrinsic.hash.toHex().toLowerCase(),
+        extrinsic_hex: extrinsic.toHex(),
+        extrinsic_index: extrinsicIndex,
+        phase_extrinsic_index: phase.asApplyExtrinsic.toNumber(),
+        event_index: eventIndex,
+        pallet: pascalCase(event.section),
+        event_name: event.method,
+        asset_id: assetId,
+        system_success_phase_extrinsic_index: success ? extrinsicIndex : null,
+        sender: eventData[0].toHex().toLowerCase(),
+        beneficiary: eventData[1].toHex().toLowerCase(),
+        amount_base_units: eventData[2].toString(),
+        call_pallet: pascalCase(method.section),
+        call_name: method.method,
+        call_sender: extrinsic.isSigned ? rawAccountId(api, extrinsic.signer) : '',
+        call_beneficiary: args.length > 0 ? rawAccountId(api, args[0]) : '',
+        call_amount_base_units: args.length > 1 ? args[1].toString() : '0',
+        extrinsic_success: success,
+      });
+    });
+    blocks.push({
+      genesis_hash: genesisHash,
+      height,
+      block_hash: blockHash.toLowerCase(),
+      parent_hash: header.parentHash.toHex().toLowerCase(),
+      finalized: true,
+      chain_name: identity.chainName,
+      spec_name: identity.specName,
+      spec_version: identity.specVersion,
+      token_symbol: identity.tokenSymbol,
+      token_decimals: identity.tokenDecimals,
+      transfers,
+    });
+  }
+  const target = blocks.flatMap((block) => block.transfers).find((transfer) => transfer.tx_hash === targetTxHash.toLowerCase());
+  assert.ok(target, `Finalized history does not contain transfer ${targetTxHash}`);
+  return {
+    genesis_hash: genesisHash,
+    chain_name: identity.chainName,
+    spec_name: identity.specName,
+    spec_version: identity.specVersion,
+    token_symbol: identity.tokenSymbol,
+    token_decimals: identity.tokenDecimals,
+    asset_id: assetId,
+    target_tx_hash: target.tx_hash,
+    target_beneficiary: target.beneficiary,
+    target_amount_base_units: target.amount_base_units,
+    blocks,
+  };
 }
 
 async function finalizedState(api, blockHash, addresses) {
@@ -141,6 +226,24 @@ async function main() {
     assert.equal(actualFee, asBigInt(feeEvent.event.data[1]), 'Balance delta does not match the finalized fee event.');
     assert.equal(after.get(alice.address).nonce, before.get(alice.address).nonce + 1n);
     console.log(`PASS: finalized balance transfer, nonce and positive runtime fee (${actualFee} base units)`);
+
+    const finalizedHeader = await api.rpc.chain.getHeader(included.blockHash);
+    const observerBundle = await finalizedObserverBundle(
+      api,
+      finalizedHeader.number.toNumber(),
+      included.txHash,
+      {
+        chainName,
+        specName: runtimeVersion.specName.toString(),
+        specVersion: runtimeVersion.specVersion.toNumber(),
+        tokenSymbol: symbol,
+        tokenDecimals: decimals,
+      },
+    );
+    const observerBundlePath = process.env.KENAN_RUNTIME_OBSERVER_BUNDLE_PATH;
+    assert.ok(observerBundlePath, 'Set KENAN_RUNTIME_OBSERVER_BUNDLE_PATH to exercise the exchange observer.');
+    fs.writeFileSync(observerBundlePath, JSON.stringify(observerBundle), { mode: 0o600 });
+    console.log(`PASS: exported finalized transfer observation bundle (${included.txHash}) for the isolated DEMO ledger boundary test`);
 
     const bobNonce = asBigInt(await api.rpc.system.accountNextIndex(bob.address));
     const unauthorizedCall = api.tx.sudo.sudo(api.tx.system.remark('test-only unauthorized Sudo probe'));
