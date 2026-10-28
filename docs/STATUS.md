@@ -21,9 +21,9 @@ This status records the current test-only project state. It is not a production-
 ## Phase 4 — closed test-only exchange (in progress)
 
 - Current branch: `feat/kenan-exchange-ledger-2026-10-27`; no changes were merged into the default branch.
-- The local Python suite passes **51/51** and Rust core tests pass **2/2**. Final branch CI has not yet run.
+- The local Python suite passes **51/51** and Rust core tests pass **2/2**. GitHub Actions run [40605765704](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40605765704) passed its Python and Rust jobs; Kenan Runtime, Polkadot SDK and Android jobs were skipped by branch conditions.
 - The exchange uses exact integer ledger units and rational limit prices; it does not assume KEN decimals or an asset policy. Fees remain unconfigured and are not charged. The book contains only submitted limit orders; no synthetic prices or liquidity are generated.
-- Test-only fixture credits are callable only from automated tests. The backend service disables fixture funding, and deposit/withdrawal HTTP routes return unavailable without changing balances. This means a fresh service has no exchange balances; chain-verified deposits belong to a later integration gate.
+- Test-only fixture credits are callable only from automated tests. The backend service disables fixture funding, and deposit/withdrawal HTTP routes return unavailable without changing balances. This means a fresh service has no exchange balances; a chain-verified test-funding path remains an outstanding Phase 4 gate.
 - The SQLite ledger, orders, trades and hash-linked audit are durable and checked on restart. Market buys require an explicit quote budget; open-order reservations and settlement are reconciled atomically.
 - The exchange is local-only, not a production service. User identifiers are not authenticated identities, and no external security audit, backup/restore drill, asset registry or production fee/custody design is complete.
 
@@ -37,8 +37,7 @@ This status records the current test-only project state. It is not a production-
 ## Not verified or not implemented yet
 
 - **No Android emulator or physical phone was connected.** Installation, Android Keystore behavior on-device, LAN reachability from a phone, QR scanning, accessibility/small-screen behavior and a UI-to-live-node round trip remain to be tested on a real device.
-- **Device-specific Android testing** remains open: physical phone setup, Keystore behavior on-device, QR scanning, small-screen/accessibility checks and a UI-to-live-node round trip.
-- **Exchange completion gate:** final GitHub CI, chain-verified test deposits, production-grade identity/session security, asset rules, backup/restore drills and independent security review remain unverified or intentionally out of scope. No real deposits, withdrawals, fees, or custody are enabled.
+- **Exchange completion gate:** no chain-verified test deposit, approved asset/unit mapping, authenticated exchange-user identity/session flow, backup/restore drill or independent security review is implemented. Deposits and withdrawals remain unavailable; no real funds are held.
 - No release signing key, independent security audit or production operations review has been configured.
 
 All balances and transactions are test data. Do not expose the node or faucet to untrusted networks or present this project as production financial infrastructure.
