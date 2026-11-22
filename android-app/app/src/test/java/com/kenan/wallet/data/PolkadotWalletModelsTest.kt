@@ -1,0 +1,81 @@
+package com.kenan.wallet.data
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.math.BigInteger
+
+class PolkadotWalletModelsTest {
+    private val identity = PolkadotNetworkIdentity(
+        chainName = "Development",
+        systemName = "solochain-template-node",
+        systemVersion = "1.0.0",
+        genesisHash = "0x" + "ab".repeat(32),
+        specName = "solochain-template-runtime",
+        specVersion = 1,
+        transactionVersion = 1,
+        tokenSymbol = "UNIT",
+        tokenDecimals = 12,
+        finalizedHash = "0x" + "cd".repeat(32),
+        finalizedHeight = 42
+    )
+
+    @Test fun mortalEraBirthMatchesSdkPhaseSemantics() {
+        assertEquals(22L, substrateMortalEraBirthBlock(22, 64, 22))
+        assertEquals(22L, substrateMortalEraBirthBlock(42, 64, 22))
+        assertEquals(86L, substrateMortalEraBirthBlock(86, 64, 22))
+    }
+
+    @Test fun mortalEraBirthRespectsSdkPhaseQuantizationForLongPeriods() {
+        assertEquals(5_000L, substrateMortalEraBirthBlock(5_001, 8_192, 5_000))
+    }
+
+    @Test fun checkedBigIntegerConversionsPreserveBoundaryValues() {
+        assertEquals(Long.MIN_VALUE, BigInteger.valueOf(Long.MIN_VALUE).longValueExactCompat())
+        assertEquals(Long.MAX_VALUE, BigInteger.valueOf(Long.MAX_VALUE).longValueExactCompat())
+        assertEquals(Int.MIN_VALUE, BigInteger.valueOf(Int.MIN_VALUE.toLong()).intValueExactCompat())
+        assertEquals(Int.MAX_VALUE, BigInteger.valueOf(Int.MAX_VALUE.toLong()).intValueExactCompat())
+    }
+
+    @Test(expected = ArithmeticException::class)
+    fun checkedLongConversionRejectsOverflow() {
+        BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE).longValueExactCompat()
+    }
+
+    @Test(expected = ArithmeticException::class)
+    fun checkedIntConversionRejectsOverflow() {
+        BigInteger.valueOf(Int.MAX_VALUE.toLong()).add(BigInteger.ONE).intValueExactCompat()
+    }
+
+    @Test fun chainPinMatchesOnlyTheExpectedGenesisAndAssetIdentity() {
+        val pin = PolkadotChainPin.from(identity)
+        assertTrue(pin.matches(identity.copy(finalizedHeight = 44)))
+        assertFalse(pin.matches(identity.copy(genesisHash = "0x" + "ef".repeat(32))))
+        assertFalse(pin.matches(identity.copy(tokenDecimals = 9)))
+        assertEquals(pin, PolkadotChainPin.fromJson(pin.toJson()))
+    }
+
+    @Test fun signingIdentityAllowsNewFinalizedHeadsButRejectsRuntimeVersionChanges() {
+        assertTrue(identity.sameSigningIdentity(identity.copy(finalizedHash = "0x" + "ef".repeat(32), finalizedHeight = 43)))
+        assertTrue(identity.sameSigningIdentity(identity.copy(genesisHash = identity.genesisHash.uppercase())))
+        assertFalse(identity.sameSigningIdentity(identity.copy(specVersion = identity.specVersion + 1)))
+        assertFalse(identity.sameSigningIdentity(identity.copy(transactionVersion = identity.transactionVersion + 1)))
+    }
+
+    @Test fun pendingExtrinsicIsRestoredWithoutChangingItsHashOrBytes() {
+        val pending = PolkadotPendingTransfer(
+            hash = "0x" + "11".repeat(32),
+            extrinsicHex = "0xdeadbeef",
+            nonce = 7,
+            genesisHash = identity.genesisHash,
+            submittedAtHeight = 42,
+            expiresAtHeight = 106
+        )
+        val restored = PolkadotPendingTransfer.fromJson(pending.toJson())
+        assertNotNull(restored)
+        assertEquals(pending, restored)
+        assertTrue(PolkadotPendingTransfer.fromJson("not json") == null)
+    }
+}

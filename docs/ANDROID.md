@@ -1,37 +1,98 @@
-# Android build (KenanWallet)
+# KenanWallet على Android — دليل التطوير والاختبار المحلي
 
-Source: android-app/ (Kotlin, Jetpack Compose, Material 3, RTL Arabic-first).
-This snapshot is SOURCE ONLY in this environment — no JDK/Android SDK here.
+التطبيق Kotlin/Compose بواجهة عربية RTL وإنجليزية LTR. يدعم إنشاء/استعادة محفظة BIP39 من 24 كلمة، وتخزين العبارة مشفّرة محليًا بمفتاح Android Keystore، وقراءة رصيد Python devnet، وQR للاستقبال، وتحويلات KEN موقّعة محليًا. صفحة التداول تتصل بمحرك DEMO في `backend/` فقط؛ ليست بورصة حقيقية ولا تسوّي التداول على البلوكشين.
 
-## In-VM build attempt, 2026-10-26 — FAILED for an environment reason, not code
-- JDK 17.0.20.1 installed via apt; Android command-line tools downloaded;
-  platform-34 (ext12) and build-tools 34.0.0 installed manually by direct
-  download, because `sdkmanager` fails in this VM's proxy (Java proxy
-  tunnelling error). Gradle 8.7 installed.
-- `gradle --version` works, but every `assembleDebug` build fails BEFORE
-  dependency resolution: the single-use Gradle daemon starts, then the
-  client fails with `DaemonConnectionException: Could not receive a
-  message from the daemon` / `Unexpected type tag 109`. This happens
-  with and without proxy settings, so it is a localhost-socket /
-  sandbox limitation of this VM, not a Kenan source error.
-- No APK file was produced or claimed. Do NOT re-run the same Gradle
-  build in this VM expecting a different result.
-- Realistic APK route: the GitHub runner workflow
-  `.github/workflows/android.yml` (JDK 17, SDK setup, `assembleDebug`,
-  upload APK artifact, debug only, no signing/publishing). It is blocked
-  only by the same workflow-file upload permission as `ci.yml`.
+## المتطلبات والبناء
 
-To build on a developer machine:
-1. Install Android Studio (JDK 17 bundled) + SDK 34.
-2. Open android-app/, let Gradle sync (Compose BOM 2024.06.00, Kotlin 1.9.24).
-3. Run the devnet node on the host; the emulator reaches it at 10.0.2.2:8545
-   (NodeApi default). On a physical device, replace the base URL with the
-   host LAN address and keep the network on a trusted network only.
-4. `./gradlew :app:assembleDebug` — debug APK only. Release signing must
-   use a keystore kept OUTSIDE the repo (see docs/OPERATIONS.md); never
-   commit signing keys.
+يلزم لبناء APK على الحاسوب JDK 17 أو أحدث وAndroid SDK Platform 34. لبناء عقدة Polkadot المحلية يلزم أيضًا Linux أو WSL2 مع Rust `1.93.0` وهدف `wasm32v1-none` ومكتبات البناء. جهّز Ubuntu/WSL2 مثلًا:
 
-Still to implement before release: wallet create/restore UI wired to
-AndroidKeyStore, QR receive, transaction history list, Shield pre-sign
-screen, Intelligence provider settings with a disable switch, biometric
-unlock, CSV export, accessibility pass on small screens.
+```bash
+sudo apt-get update && sudo apt-get install -y build-essential cmake libclang-dev llvm-dev libssl-dev pkg-config protobuf-compiler
+rustup toolchain install 1.93.0 --profile minimal
+rustup target add wasm32v1-none --toolchain 1.93.0
+git submodule update --init --depth 1 -- polkadot/sdk
+```
+
+يجلب `polkadot/sdk/` مصدر SDK المثبت كموديول فرعي. بناء العقدة كبير ويحتاج عدة غيغابايت من مساحة القرص؛ لا تخلط مساحة البناء مع بياناتك.
+
+```bash
+# من جذر المستودع
+./polkadot/kenan-runtime/run-local.sh
+
+# لبناء APK (نافذة طرفية ثانية)
+cd android-app
+./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+يحافظ `run-local.sh` على RPC وP2P في loopback، ويطبّق Runtime الاختباري مؤقتًا ثم يعكس تعديل SDK عند إيقافه بـ`Ctrl+C`. بيانات العقدة التجريبية تبقى في `data/kenan-polkadot-dev` افتراضيًا. قد غُيّر هذا المسار عبر `KENAN_RUNTIME_BASE_PATH`. الافتراضي `RPC=9950` و`P2P=30335`؛ يمكن تغييرهما بمتغيري `KENAN_RUNTIME_RPC_PORT` و`KENAN_RUNTIME_P2P_PORT`. لا تستخدمه لتخزين أو نقل أصول حقيقية.
+
+النص البرمجي يشغّل **Kenan Development (TEST ONLY)**، لكن الأصل المعروض من الـRuntime هو `UNIT` بدقة 12 خانة، وليس رمزًا أو اقتصادًا معتمدًا لـKEN. لا تغيّر ذلك ولا تستنتج منه سعرًا أو رصيدًا حقيقيًا. أما `polkadot/run-local.sh` فيشغّل قالب Solochain الرسمي العام على `9944` وليس Runtime كنان.
+
+## المحاكي والهاتف الحقيقي
+
+- **Android Emulator:** العنوان الافتراضي لمسار Polkadot هو `ws://10.0.2.2:9944`؛ هذا الجسر يخص المحاكي فقط، ولا تستخدمه على هاتف.
+- **هاتف حقيقي:** لا يخمّن التطبيق عنوان LAN. يتيح عنوان `ws://127.0.0.1:<port>` أو `wss://` إلى شبكة خاصة، ويرفض WebSocket غير المشفر إلى عنوان LAN. لا يوضع IP أو رمز أو مفتاح في APK.
+- يتصل Backend الخاص بالبورصة على loopback فقط، لذا لا يصل إليه الهاتف ولا ينبغي فتحه. DEMO ودفتر التداول مستقلان عن سلسلة Polkadot.
+
+## ربط هاتف حقيقي عبر Wi‑Fi دون كشف RPC على الشبكة
+
+المسار الموصى به هو **Wireless debugging مع ADB reverse**: اتصال ADB المقرون ينقل منفذ الهاتف المحلي إلى منفذ loopback على الحاسوب. بذلك يبقى RPC على `127.0.0.1` ولا يستمع على Wi‑Fi، ولا نحتاج وسيطًا يفتح RPC أو منفذًا في الراوتر.
+
+1. استخدم حاسوبًا يبقى قيد التشغيل، وثبّت Android Platform Tools (`adb`). ابنِ العقدة وشغّل `./polkadot/kenan-runtime/run-local.sh` من جذر المستودع. تأكد أن الشاشة تعرض `RPC ready` و`Kenan Development (TEST ONLY)`.
+2. على الهاتف، فعّل خيارات المطوّر ثم **Wireless debugging**. صِل الهاتف والحاسوب إلى شبكة Wi‑Fi خاصة موثوقة، وافتح **Pair device with pairing code**.
+3. من الحاسوب نفّذ الأمرين مع المنافذ والعنوان اللذين يعرضهما الهاتف (منفذ الاقتران يختلف عن منفذ الاتصال):
+
+   ```bash
+   adb pair <IP-الهاتف>:<منفذ-الاقتران>
+   adb connect <IP-الهاتف>:<منفذ-Wireless-debugging>
+   adb devices -l
+   ```
+
+   عند طلب الأمر، أدخل رمز الاقتران المؤقت الظاهر على الهاتف في الطرفية، ثم وافق على اقتران الكمبيوتر. يجب أن يظهر الجهاز بحالة `device` قبل المتابعة.
+4. اعكس منفذ RPC من الهاتف إلى loopback على الحاسوب؛ استخدم المنفذ نفسه على الجانبين:
+
+   ```bash
+   adb reverse tcp:9950 tcp:9950
+   adb reverse --list
+   ```
+
+   لا تضف `--rpc-external` ولا تفتح `9950` أو `30335` على الجدار الناري. اترك P2P محليًا أيضًا. النقل يتم داخل جلسة Wireless ADB المقترنة، وليس عبر خدمة RPC عامة على LAN.
+5. ثبّت APK Debug على الهاتف (أو عبر `adb install -r android-app/app/build/outputs/apk/debug/app-debug.apk`)، وافتح **الإعدادات** في التطبيق، واضبط Substrate/Polkadot RPC على `ws://127.0.0.1:9950`، ثم أعد المحاولة. تحقّق على الهاتف من هوية `Kenan Development (TEST ONLY)` والارتفاع النهائي. إذا اختلفت الهوية، أوقف الاختبار ولا ترسل معاملة.
+6. بعد الاختبار أوقف العقدة بـ`Ctrl+C`، ثم أزل التحويل وأوقف Wireless debugging:
+
+   ```bash
+   adb reverse --remove tcp:9950
+   adb disconnect <IP-الهاتف>:<منفذ-Wireless-debugging>
+   ```
+
+   إذا لم يتوفر Wireless debugging، استخدم اتصال USB مع `adb reverse tcp:9950 tcp:9950`؛ تظل العقدة محلية، لكن هذا بديل عبر USB وليس اختبار Wi‑Fi.
+
+**ما يلزم:** حاسوب Linux/WSL2 لبناء وتشغيل العقدة، و`adb`، وهاتف Android فعلي للتجربة؛ المحاكي وحده لا يثبت نجاح Wi‑Fi أو سلوك Keystore على الهاتف. يمكن استخدام كمبيوتر Linux آخر بدل جهاز التطوير إذا عليه المصدر والأدوات نفسها. لا تعتمد على عقدة CI البعيدة كبديل لاتصال الهاتف المحلي.
+
+**حالة هذا التشغيل:** لم يكن `adb` أو هاتف/محاكي متصل متاحًا في بيئة التطوير، ولم يكن ملف عقدة مبني موجودًا، ومساحة القرص المتاحة لم تسمح ببناء SDK محلي. لذلك لم ينفّذ اختبار هاتف حقيقي بعد؛ هذه خطوات تشغيل قابلة لإعادة الإنتاج وليست ادعاء نجاح.
+
+## Python devnet — منفصل عن Polkadot
+
+للقراءة من Python devnet على الحاسوب نفسه شغّل `python3 -m blockchain.node_server --host 127.0.0.1 --port 8545 --data data/chain.json`. يمكن للمحاكي الوصول عبر `http://10.0.2.2:8545`. لا توجّه الإرشادات القديمة إلى `http://<IP-LAN>:8545` من التطبيق: إعداد Network Security يمنع HTTP الواضح إلى عنوان LAN. إذا دعت الحاجة إلى هاتف حقيقي، فضّل `adb reverse tcp:8545 tcp:8545` واتصل بـ`http://127.0.0.1:8545` بدل فتح منفذ العقدة على الشبكة.
+
+لا تفتح تحويل منافذ في الراوتر، ولا تعرّض العقدة أو Backend للإنترنت. لا تشغّل منفذ HTTP الواضح على LAN لتجاوز إعدادات Android الأمنية. خادم Exchange التجريبي loopback فقط.
+
+## بيانات السوق والتداول التجريبي
+
+زوج الاختبار الوحيد هو `DEMO_BASE/DEMO_QUOTE`. الأرصدة وحدات دفتر صحيحة ومبهمة؛ ليست KEN أو USD ولا تُحوّل إلى دقة أو قيمة على السلسلة. لا يوجد زر تمويل في التطبيق. يمنح المشغّل وحدات DEMO محليًا فقط عبر `python3 -m backend.exchange.demo_funding grant` إلى قاعدة `data/demo-exchange.sqlite3`؛ لكل حساب/أصل منحة واحدة لا تتجاوز 10,000 وحدة، والسقف الإجمالي 100,000 وحدة خام عبر الأصول. تتطلب الأداة معرف منحة فريدًا وتكتب قيدًا مزدوجًا وسجل تدقيق. لا يوجد مسار إيداع/سحب حقيقي عبر HTTP أو Android.
+
+يحتاج HTTP الخاص بالبورصة إلى حساب محلي وجلسة Bearer؛ التسجيل مفتوح فقط للخدمة المحلية ويمنح دور `trader`، والجلسات تنتهي خلال 8 ساعات. كلمة المرور محفوظة كـPBKDF2-HMAC-SHA256 salt/hash، ولا يُحفظ رمز الجلسة إلا كـSHA-256. هذا مناسب لاختبار محلي فقط وليس مزود هوية إنتاجيًا. تفاصيل الاستخدام في [مرجع API](API.md).
+
+يعرض دفتر الأوامر أوامر limit المرسلة فقط، ولا توجد تغذية أسعار أو سيولة مصطنعة. لا تستطيع شاشة السوق على هاتف منفصل الوصول إلى Exchange المحلي. التداول لا يُسوّى على Python devnet أو Polkadot ولا يحتفظ بأموال حقيقية.
+
+## حماية المحفظة والتحويلات
+
+- بقي `applicationId` واشتقاق BIP39/Ed25519 وتنسيق معاملة Python الحالي كما هي. Android Keystore يحفظ مفتاح AES-GCM غير القابل للتصدير؛ العبارة لا تُرسل إلى العقدة.
+- يستخدم فك التشفير IV المحفوظ داخل ملف المحفظة مع `GCMParameterSpec`؛ لم يتغير إصدار الملف أو AAD أو الاسم المستعار للمفتاح.
+- قبل التوقيع، تعرض شاشة المراجعة المستلم والمبلغ والرسوم والإجمالي. يعيد التطبيق قراءة الرصيد وnonce والرسوم، ويوقع محليًا، ويرسل مرة واحدة، ثم يتحقق من المعاملة بالهاش والحقول. إذا غمضت نتيجة الإرسال لا يعيد التطبيق الإرسال تلقائيًا.
+- لا يحفظ التطبيق دفتر أرصدة محليًا. إخفاء الرصيد تفضيل عرض محلي فقط.
+- العبارة/المفتاح قد يوجدان مؤقتًا في ذاكرة العملية أثناء الاشتقاق والتوقيع؛ لم تُجرَ مراجعة أمنية مستقلة للتطبيق.
+
+## ما لم يُختبر على جهاز
+
+اختبارات Python وRust وAndroid JVM وLint والبناء لا تثبت الوصول الفعلي عبر Wi‑Fi أو قابلية مسح QR أو سلوك Android Keystore على جهاز. يلزم تنفيذ خطوات الربط أعلاه على هاتف حقيقي، ثم اختبار الهوية والارتفاع وقراءة الرصيد وتجربة إرسال test-only بإشراف المشغّل قبل إعلانها مجرّبة على جهاز. لا تستخدم أموالًا حقيقية ولا تعرض هذه النسخة على أنها جاهزة للإنتاج.

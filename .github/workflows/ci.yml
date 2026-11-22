@@ -1,0 +1,210 @@
+name: Kenan CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+
+  rust-tests:
+    name: Rust core tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --manifest-path rust-core/Cargo.toml
+
+  kenan-runtime-tests:
+    name: Kenan Runtime test-only overlay integration
+    if: ${{ (github.head_ref || github.ref_name) == 'feat/kenan-runtime-customization-2026-10-27' || (github.head_ref || github.ref_name) == 'feat/kenan-exchange-ledger-2026-10-27' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_RELEASE_DEBUG: 0
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt
+          targets: wasm32v1-none
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libclang-dev llvm-dev libssl-dev pkg-config protobuf-compiler
+      - id: kenan-runtime-cache
+        uses: actions/cache@v4
+        with:
+          path: polkadot/sdk/target/release/solochain-template-node
+          key: ${{ runner.os }}-kenan-runtime-rust-1.93.0-${{ hashFiles('polkadot/sdk/Cargo.lock', 'polkadot/kenan-runtime/apply-overlay.py') }}
+          restore-keys: |
+            ${{ runner.os }}-kenan-runtime-rust-1.93.0-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: polkadot/integration-test/package-lock.json
+      - name: Install the pinned RPC integration-test client
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix polkadot/integration-test
+      - name: Build or reuse the Kenan Runtime node binary
+        env:
+          KENAN_RUNTIME_BUILD_ONLY: "1"
+          KENAN_RUNTIME_SKIP_BUILD: ${{ steps.kenan-runtime-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          bash ./polkadot/kenan-runtime/test-runtime.sh 2>&1 | tee "$RUNNER_TEMP/kenan-runtime-ci.log"
+      - name: Save compiled Kenan Runtime node before tests
+        if: steps.kenan-runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: polkadot/sdk/target/release/solochain-template-node
+          key: ${{ runner.os }}-kenan-runtime-rust-1.93.0-${{ hashFiles('polkadot/sdk/Cargo.lock', 'polkadot/kenan-runtime/apply-overlay.py') }}
+      - name: Run Kenan Runtime integration tests
+        env:
+          KENAN_RUNTIME_SKIP_BUILD: "1"
+        run: |
+          set -euo pipefail
+          bash ./polkadot/kenan-runtime/test-runtime.sh 2>&1 | tee -a "$RUNNER_TEMP/kenan-runtime-ci.log"
+      - name: Upload Kenan Runtime test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kenan-runtime-test-log
+          path: ${{ runner.temp }}/kenan-runtime-ci.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  polkadot-sdk-local-node:
+    name: Polkadot SDK local node integration and restart recovery
+    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_RELEASE_DEBUG: 0
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt
+          targets: wasm32v1-none
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libclang-dev llvm-dev libssl-dev pkg-config protobuf-compiler
+      - uses: actions/cache@v4
+        with:
+          path: polkadot/sdk/target
+          key: ${{ runner.os }}-polkadot-stable2603-7-rust-1.93.0-${{ hashFiles('polkadot/sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-polkadot-stable2603-7-rust-1.93.0-
+      - name: Build the pinned official Solochain template
+        run: ./polkadot/build-node.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polkadot-solochain-template-node
+          path: polkadot/sdk/target/release/solochain-template-node
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: polkadot/integration-test/package-lock.json
+      - name: Install the pinned RPC integration-test client
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix polkadot/integration-test
+      - name: Run signed transaction, invalid/replay, fee/nonce, finality, RPC outage and restart tests
+        run: ./polkadot/test-local.sh
+
+  android-debug:
+    name: Android debug APK
+    if: ${{ (github.head_ref || github.ref_name) != 'feat/kenan-runtime-customization-2026-10-27' }}
+    runs-on: ubuntu-24.04
+    needs: polkadot-sdk-local-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: polkadot-solochain-template-node
+          path: polkadot/sdk/target/release
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: polkadot/integration-test/package-lock.json
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+      - run: yes | sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - name: Verify the excluded Nova mnemonic dependencies stay out of the app
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon :app:dependencies --configuration debugRuntimeClasspath --console=plain >/tmp/kenan-android-runtime-dependencies.txt
+          if grep -Eiq 'com\.github\.NovaCrypto:(BIP39|Sha256|ToRuntime)|io\.github\.novacrypto:(SHA256|ToRuntime)|spongycastle' /tmp/kenan-android-runtime-dependencies.txt; then
+            cat /tmp/kenan-android-runtime-dependencies.txt
+            echo 'Unexpected optional Nova mnemonic dependency in Android runtime classpath' >&2
+            exit 1
+          fi
+        working-directory: android-app
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefix polkadot/integration-test
+      - name: Run Android unit and live Substrate integration tests on the local template
+        run: |
+          set -euo pipefail
+          node_bin="$GITHUB_WORKSPACE/polkadot/sdk/target/release/solochain-template-node"
+          chmod +x "$node_bin"
+          "$node_bin" --dev --tmp --rpc-port 9944 --rpc-methods unsafe \
+            --listen-addr /ip4/127.0.0.1/tcp/30333 >/tmp/kenan-polkadot-node.log 2>&1 &
+          node_pid=$!
+          trap 'kill "$node_pid" 2>/dev/null || true; wait "$node_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in $(seq 1 60); do
+            if ! kill -0 "$node_pid" 2>/dev/null; then cat /tmp/kenan-polkadot-node.log; exit 1; fi
+            if curl --silent --show-error --fail -H 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"system_chain","params":[]}' \
+              http://127.0.0.1:9944/ >/tmp/kenan-polkadot-ready.json 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then cat /tmp/kenan-polkadot-node.log; exit 1; fi
+          POLKADOT_RPC_URL=ws://127.0.0.1:9944 node "$GITHUB_WORKSPACE/polkadot/integration-test/fund-android-test-wallet.cjs"
+          POLKADOT_RPC_URL=ws://127.0.0.1:9944 ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain
+        working-directory: android-app
+      - name: Upload Android APK and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KenanWallet-debug-and-test-reports
+          path: |
+            android-app/app/build/outputs/apk/debug/app-debug.apk
+            android-app/app/build/reports/tests/testDebugUnitTest/
+            android-app/app/build/reports/lint-results-debug.html
+            android-app/app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt
+            android-app/app/build/test-results/testDebugUnitTest/
+          if-no-files-found: warn
+          retention-days: 7

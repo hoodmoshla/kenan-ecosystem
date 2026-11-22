@@ -1,22 +1,29 @@
-# Threat model & key management (summary)
+# Security model — development build
 
-- Keys: user-held only. Wallet signs locally (Python reference + Rust
-  core + Android Keystore design). No server, log, crash report or
-  AI-assistant request ever receives a seed phrase or private key.
-  The Intelligence module refuses payloads containing key fields.
-- Storage: Android release build must use AndroidKeyStore AES/GCM for
-  the seed, never plaintext SharedPreferences/SQLite/files. Biometrics
-  unlock the local key; they are NOT a backup — backup completeness is
-  proven by re-deriving the address from the phrase (tested).
-- Transactions: Shield shows blocked/warning/ok/not_checked — never
-  "safe" without data. Simulation is not a guarantee. High fees and
-  untrusted recipients warn before signing; signing needs explicit user
-  confirmation showing recipient, network, amount and fee.
-- Backend: admin endpoints disabled unless KENAN_ADMIN_TOKEN is set and
-  matched; demo exchange balances are isolated from chain balances;
-  audit events append to data/audit.log.
-- Supply: the admin UI cannot mint chain balances or edit chain state.
-  Only chain rules (genesis/faucet/fees on devnet) change supply, and
-  the faucet exists ONLY on devnet.
-- What is NOT yet audited: everything. No independent audit has been
-  performed; do not launch publicly on the basis of this snapshot.
+This repository is a prototype, not a reviewed financial product. The Python node has no distributed consensus, and its local JSON ledger is not a production trust anchor.
+
+## Implemented in this snapshot
+
+- `wallet-core/` is the Python reference for BIP39 24-word seed derivation and Ed25519 signing.
+- `android-app/` creates/restores the compatible 24-word phrase, stores it as AES-GCM ciphertext in app-private storage, and uses a non-exportable AES key generated in Android Keystore. `allowBackup=false` avoids restoring ciphertext without its device-bound key. The phrase is decrypted briefly in the app process for local Ed25519 signing; the Ed25519 private key itself is derived in software, not held in Android Keystore. There is no independent mobile security audit.
+- Android checks the expected `kenan-devnet-1` / `devnet-test-only` network. Before signing, it displays recipient, amount, fee and total, re-reads account nonce/balance, signs locally, submits once, and compares the confirmed RPC record. Ambiguous network results are not auto-resubmitted.
+- The Python node validates signature, sender/address relation, amount, fixed fee, nonce, balance and replay. It records each transfer in a hash-linked block. Faucet issuance is recorded as a separate event and capped cumulatively at 1000 KEN/address. Faucet and `/mine` are loopback-only unless an operator token is explicitly configured for a private network.
+- On restart, the node rebuilds balances, nonces, faucet issuance, seen transaction IDs, burned fees, supply and transaction lookup from the block ledger. It validates each transfer and event, checks block hashes/supply conservation, and rejects mismatched snapshots. Mutations use a single-process lock and atomic replacement; a failed save rolls back in-memory state.
+
+## Limits and risks
+
+- The local hash chain is not signed by an independent consensus quorum. A person able to rewrite the entire local ledger and recompute its hashes can still replace it. Run a single node process against one state file; multi-process writers, remote administration and production backups/restore drills are not implemented.
+- Older JSON snapshots may contain faucet-created balances that were never written to blocks. The new loader refuses to trust a snapshot that cannot be rebuilt. Preserve the original file and require an explicit migration decision; no such `data/chain.json` was present in the checked workspace.
+- The devnet faucet is not an issuance policy for a public network. The loopback default and per-address cap reduce accidental exposure, but do not turn this prototype into a secure public faucet.
+- HTTP is enabled only in the Debug app manifest for local testing; the base/Release manifest keeps cleartext disabled. No production TLS endpoint is configured.
+- Debug APK uses the standard Android Debug signing certificate. No project release key, signing-key fingerprint verification, independent security audit, penetration test, production custody, real funds, mainnet or audited bridge exists.
+- The exchange stores integer-unit double-entry journals, orders, trades, idempotency records and an append-only hash-linked audit in a dedicated SQLite database (`data/demo-exchange.sqlite3`). It is separate from both Python devnet and Polkadot chain state. Its local hash chain is not protected from an operator who can rewrite the database and recompute it.
+- The only funding mechanism is `backend.exchange.demo_funding`, a local operator CLI not imported by the HTTP app or Android client. It writes to the same isolated DEMO database; grants are one per user/asset, capped at 10,000 raw units each, and total issuance is capped at 100,000 raw units across DEMO assets. Unique grant IDs make retries idempotent. Each successful grant has an immutable double-entry journal, unique ledger event and hash-linked audit record. These opaque units are not KEN/USD and have no monetary or on-chain value.
+- Exchange has local test accounts and bearer sessions. Passwords use PBKDF2-HMAC-SHA256 with independent 16-byte salts (600,000 iterations); the server issues URL-safe bearer values, persists only their SHA-256 hashes, and expires sessions after 8 hours. Sessions can be revoked. Public registration can create only `trader`; non-trader roles cannot place/cancel orders. Private reads and mutations derive the user from the principal, reject cross-account IDs and require a session. Loopback-only binding remains in force; these controls do not justify exposing Exchange to LAN or the Internet. There is no MFA, password recovery, rate limiting/lockout, transport security configuration, or independent identity/security review. `/admin/status` separately requires `KENAN_ADMIN_TOKEN` and `X-Admin-Token`.
+- Existing unauthenticated ledger user IDs are reserved as legacy accounts during schema migration, so someone cannot claim an old balance merely by registering the same name. That data remains DEMO-only; no automatic password/account migration is attempted.
+- `backend/exchange/chain_deposits.py` is a fail-closed, observation-only boundary. It pins genesis hash, chain name, runtime `specName`/version, token display symbol/decimals and a chain-scoped asset ID; requires a finalized sequential block/checkpoint; recomputes the Substrate extrinsic hash from raw bytes; and checks a successful `System.ExtrinsicSuccess` phase, the signed `Balances.transfer*` call, signer, call destination/amount, matching `Balances.Transfer` event and explicit binding of raw 32-byte AccountId32 to an active trader. A unique `(genesis, transaction, event)` observation key, immutable rows and an atomic checkpoint prevent duplicate credit across retries/restarts. New events remain `pending_settlement_review` with no ledger event ID; this component contains no method to credit trading balances.
+- The Node.js adapter in `polkadot/kenan-runtime/test-kenan-runtime.cjs` and its Python handoff script are test harnesses that read an actual finalized local Runtime transfer and prove it remains uncredited after a replay/restart. They are not a continuously running RPC watcher or production deposit service. HTTP deposit/withdrawal routes remain unavailable; there is no authorized KEN asset/decimal mapping or settlement approval workflow.
+- The only pair is `DEMO_BASE/DEMO_QUOTE`; order amounts are integer ledger units and limit prices are exact rational pairs. The HTTP service charges no fee by default; fee arithmetic is covered only by isolated test cases and is not an approved fee policy. The book contains only submitted limit orders. Deposit/withdrawal routes return unavailable, and no real custody or chain settlement exists.
+- Backend payment receipt claims remain unverified against the node. Governance is off-chain signalling and bridge transfers are disabled.
+
+Do not expose the node or faucet to untrusted networks, store real assets here, or describe devnet balances as monetary value. See `docs/STATUS.md`, `docs/OPERATIONS.md` and `docs/POLKADOT.md`.

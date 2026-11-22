@@ -1,69 +1,144 @@
-# Kenan on Polkadot SDK — transition plan (devnet stays live until this passes)
+# Kenan Ecosystem — Polkadot SDK, wallet and exchange roadmap
 
-Status: PLAN + TARGET VERSION ONLY. No Substrate node is built yet, and
-nothing here replaces the working Python devnet (`blockchain/`).
-Do not present this document as a running Substrate chain.
+**Purpose:** build a separate, test-only Polkadot SDK chain and grow it into a compatible wallet and exchange integration without removing working Python devnet behavior. A plan, template, mock screen, or draft is not evidence that a feature works.
 
-## Target (to re-verify against paritytech/polkadot-sdk releases at build time)
-- Latest stable found in search index at planning time: `polkadot-stable2606-2`,
-  node version v1.24.2. Re-check the official releases page before pinning;
-  do NOT pin from memory or from a mirror alone.
-- Starting point: the official Substrate node template for that stable
-  branch (solo chain, not a parachain in phase 1).
-- Consensus: Aura (block production) + GRANDPA (finality), the template
-  defaults. Single-validator devnet first, then a 2–3 validator testnet
-  with keys inserted via `node key insert` (Aura Sr25519, Grandpa Ed25519).
-- Runtime pallets (minimum): System, Timestamp, Aura, Grandpa, Balances,
-  TransactionPayment, Sudo (devnet only — must be removed before any
-  public testnet), plus a Kenan metadata pallet or Balances configuration
-  carrying: token symbol KEN, decimals 9 (to match the devnet: 1 KEN =
-  10**9 base units), existential deposit to be decided in the tokenomics
-  review, and the flat-fee rule re-implemented as a fee model, not as
-  hard-coded Python constants.
+## Guardrails and current boundary
 
-## Why this VM cannot build it now
-- Full Substrate release builds need several GB of RAM and a long build
-  (wasm runtime + native node). This VM has 2 CPUs and very little free
-  RAM at planning time. Attempting it here would OOM and produce no
-  verifiable artefact, so it is deliberately NOT started here.
-- Build it on a larger machine or a GitHub Actions runner with at least
-  16 GB RAM, Rust stable + `wasm32-unknown-unknown` target, and the
-  template's documented prerequisites. The CI job for it must run
-  `cargo check` first (fast failure) before any release build.
+- `blockchain/` remains the current Python devnet. Keep it selectable and keep its tests green until the replacement has passed the applicable compatibility gates and a rollback path is verified.
+- Continue wallet/RPC work and device testing alongside chain work. The previous phase passed Python 32/32, Rust 2/2, Android JVM 15/15, lint and CI; a real phone/emulator RPC round trip and on-device checks were not performed.
+- The selected official SDK baseline is `polkadot-stable2603-7` (tag commit `cd87d0b95e54c8ffc374334386f3f2b2c7a61f54`), reported as tested with Rust Stable `1.93.0`. That exact source/toolchain/lockfile has now built successfully; source review alone is not proof. See [SDK source and compatibility notes](POLKADOT_SDK_RESEARCH.md) and the verified slice below.
+- Keep local development/test chain keys and balances test-only. Never infer that existing Python phrases, addresses, signatures or balances map to Substrate accounts. Document address prefix/SS58, key derivation, signature type and SCALE encoding before wallet integration.
+- [Tokenomics draft](TOKENOMICS_DRAFT.md) contains unapproved options only. No supply, decimals, allocation, fees, governance, validator policy or public genesis decision is approved by this roadmap. Do not launch a public testnet or represent test balances as having monetary value.
+- Do not add real custody, real deposits/withdrawals, public registration, public trading, leverage, margin or derivatives during the initial exchange work.
 
-## RPC / wallet compatibility map (the contract the Substrate node must meet)
-The Python devnet exposes a small HTTP JSON API; the Android app and
-backend currently use it. The Substrate node speaks JSON-RPC over
-WebSocket/HTTP with different method names, so the wallet needs an
-adapter, not a rewrite of its UX:
-- `GET /chain/info` (height, supply, burned) -> `chain_getHeader` +
-  `system_properties` + Balances total issuance query.
-- `GET /accounts/<addr>` (balance, nonce) -> `system_account` storage
-  query for that SS58 address (note: SS58 address format differs from
-  the devnet `kenan1…` format — the wallet must support both during
-  migration, and old devnet addresses do NOT carry over automatically).
-- `POST /tx/submit` (Ed25519-signed, chain-id in message, sequential
-  nonce, fee) -> Substrate extrinsic submission: the signing payload
-  is the SCALE-encoded extrinsic, the nonce is the account nonce from
-  `system_account`, and the fee is estimated via `payment_queryInfo`.
-  The Python canonical message format must NOT be sent to Substrate;
-  it is devnet-only.
-- Explorer: Substrate blocks are fetched via `chain_getBlock`, not
-  `/blocks/<height>`.
+## Phase 2 — Build a real local Kenan node with Polkadot SDK
 
-## Integration-test gate before switching the wallet's default network
-1. Substrate dev node produces blocks locally and finalises them.
-2. A test account receives KEN (Balances), sends a transfer, and the
-   balance + nonce read back through the adapter match the chain.
-3. A replayed extrinsic and a wrong-nonce extrinsic are both rejected.
-4. The Python devnet still runs unchanged, and the wallet can switch
-   networks explicitly (never silently) — only then may the Substrate
-  chain become the default in a release build.
-5. No mainnet, no real funds, no public listing at any point in this
-   transition; the tokenomics document remains a draft until reviewed.
+Begin with an isolated workspace such as `polkadot/`; keep Python devnet, `wallet-core/`, `rust-core/` and Android behavior intact. The current SDK release’s [official Solochain template](https://docs.polkadot.com/parachains/customize-runtime/) is the starting point. Use the official template matching the pinned SDK release; do not silently substitute an older standalone template. Local development can use the template’s explicitly development-only genesis while tokenomics decisions remain open.
 
-## Address-format warning (do not hide this)
-Devnet addresses (`kenan1` + SHA-256(pubkey)[:20]) are NOT Substrate
-SS58 addresses. A migration must re-derive or re-issue addresses and
-tell users explicitly that devnet balances are test tokens and do not
-migrate as value. Any document claiming otherwise is wrong.
+### Verified first slice (2026-10-27)
+
+- `polkadot/sdk/` is pinned to official SDK tag `polkadot-stable2603-7` / `polkadot-v1.22.7`, commit `cd87d0b95e54c8ffc374334386f3f2b2c7a61f54`; the unmodified Solochain node built successfully with Rust `1.93.0` and `--locked --release`.
+- A real local `Development` node produced/finalized blocks and served RPC on loopback. The integration smoke test signed an Alice-to-Bob transfer of `1,000,000,000` base units; the recipient increased by that exact amount, the sender paid a calculated `759,936,145` base-unit fee, and nonce changed `0 → 1`. Transaction hash: `0xd586064626c00169fdae429ed50e797ee899eb87a3aa14c3f91cbd707b61bc68`.
+- Hosted [GitHub Actions run 40495611143](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40495611143) on [commit `e397fc7`](https://github.com/hoodmoshla/kenan-ecosystem/commit/e397fc7c442165a2d357020082a755478f11f00f) passed all four jobs: Python, Rust core, Android debug APK, and Polkadot SDK local-node integration/restart. The Polkadot job built the pinned SDK template and ran `./polkadot/test-local.sh` against the real local node.
+- The integration program printed `result: passed` at finalized height `8`. Its checks passed for invalid and mutated signature rejection; unchanged balances/nonce for rejected transactions; replay and stale-nonce rejection; three sequential transfers with measured fees reconciled to sender/recipient balances; successful transfer events in finalized blocks; increasing finalized heights; and a 2-second delayed finality notification handled with one submission.
+- The same CI log observed RPC outage while the node was stopped, restarted the node using the same chain data directory, and printed `PASS local node restart, RPC outage/recovery, persisted balances, nonce, and finalized extrinsics`. The test reads the template's existential deposit (`1,000,000,000`) and sends `1,500,000,000` to the initially unendowed test recipient so the transfer is valid.
+- This verifies the upstream development template and its local-node gate only. It is not a Kenan-specific runtime/genesis or KenanWallet integration; the delayed-finality test exercises the integration client, not the Android wallet, and no phone/emulator RPC round trip was performed. Keep wallet integration and Kenan-specific monetary/authority decisions as later gates.
+
+### What the pinned official template provides — and what Kenan still needs
+
+The pinned upstream [Solochain runtime](../polkadot/sdk/templates/solochain/runtime/src/lib.rs) composes System, Timestamp, Aura, GRANDPA, Balances, Transaction Payment, Sudo and the example Template pallet. Its [runtime configuration](../polkadot/sdk/templates/solochain/runtime/src/configs/mod.rs) includes Substrate's generic SS58 prefix `42`, `AccountId32`-compatible multi-signature accounts, a `u128` balance type, a `u32` nonce, an existential-deposit constant, and weight/length-based transaction-fee machinery. The [chain spec](../polkadot/sdk/templates/solochain/node/src/chain_spec.rs) supplies Development and Local Testnet presets. These are upstream starter capabilities and development defaults, not approved Kenan currency settings.
+
+The template does **not** define Kenan's approved asset name/precision, issuance or supply cap, distribution, fee destination, minimum-balance policy, governance, validator membership, production authority policy, Python-address migration, KenanWallet signing/metadata adapter, or exchange ledger. Sudo and development accounts are not a governance model or production key policy. A successful transfer on this template therefore proves SDK compatibility only; it does not make the chain a finished Kenan network. Any changes to monetary policy or privileged roles remain subject to the documented user decision gate.
+
+### 2.1 Pin and build the baseline
+
+- Record the exact upstream SDK/template revision, tested Rust version, required targets and native build prerequisites. Commit the toolchain and Cargo lockfile; builds must use locked dependencies.
+- Create an isolated node/runtime workspace from the official Solochain template. Do not replace or rename the Python chain.
+- Build from a clean checkout, start the actual node locally with development keys only, and verify the node is producing blocks and serving its real RPC. Do not call a draft, UI, mock or downloaded binary a built Kenan node.
+- Keep genesis reproducible. Label the development spec and development accounts as test-only; do not encode an unapproved public distribution.
+
+### 2.2 Runtime and node behavior
+
+Use only the capabilities supported by the pinned template/release and keep changes minimal. Verify native accounts and balances, signed transfers, nonce validation and replay rejection, transparent test fees, block production/finality, RPC reads/submission/status, and persistence/restart. Aura and GRANDPA may be retained if they are present and compatible with the exact template. Do not add a custom pallet or infer currency policy without a documented requirement and approval.
+
+### 2.3 Tests and CI gate
+
+Add runtime/node tests and an actual local-node smoke test proving account/balance reads, valid transfer, invalid signature rejection, nonce/replay behavior, fee/balance accounting, block/finality progress, restart recovery and RPC response. Keep Python devnet tests, Rust core tests and Android tests/build in their existing CI jobs. Add a separate SDK CI lane only after local prerequisites and resource use are understood; pin its toolchain, build locked sources, run tests/smoke checks, and never cache or publish validator keys.
+
+**Phase 2 completion gate:** a reproducible clean-checkout build; a real local SDK node starts, authors/finalizes blocks and accepts a real signed transfer; tests and RPC read-back pass; the Python suite remains green and the Python node still runs independently. Until all evidence exists, describe this phase as in progress, not complete. Do not proceed to the wallet integration phase on a failing gate.
+
+## Phase 3 — Add Polkadot SDK as a separate KenanWallet network
+
+Only after Phase 2 passes:
+
+### Verified wallet integration slice (2026-10-27; hosted CI)
+
+- Feature branch `feat/kenanwallet-polkadot-integration-2026-10-27`, code commit [`8206d054`](https://github.com/hoodmoshla/kenan-ecosystem/commit/8206d054a44f3c789a8cf8f7ffdd54ec47ba6105), passed [GitHub Actions run 40556600981](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40556600981): Rust core tests, Polkadot SDK local-node integration/restart recovery, Python tests, and Android debug APK.
+- The Android CI step passed `:app:testDebugUnitTest`, `:app:lintDebug`, and `:app:assembleDebug`; its live transfer test against the local Solochain node finalized successfully and verified balance/fee/nonce reconciliation and no duplicate after a pre-submit connection failure.
+- The `bad signature` root cause was the mortal-era checkpoint: the app used `height - phase`, while the pinned SDK defines `birth(current) = (max(current, phase) - phase) / period * period + phase`; for period 64, phase 22, the checkpoint is block 22, not genesis block 0. The [official SDK source at the pinned commit](https://github.com/paritytech/polkadot-sdk/blob/cd87d0b95e54c8ffc374334386f3f2b2c7a61f54/substrate/primitives/runtime/src/generic/era.rs) confirms the formula. No key derivation, Ed25519 signature format, V4 extrinsic version, or signed-extension order was changed.
+- Android `BigInteger` narrowing now uses API-26-compatible round-trip checks while still throwing on overflow; boundary and overflow tests pass. CI artifacts retain the full Lint report if future Android checks fail.
+- This is hosted CI evidence only: no physical-device/emulator RPC round trip was performed. The feature branch remains unmerged; this slice is not a release or security sign-off.
+
+- Implement a separate Substrate RPC/client adapter; do not mix it with the Python devnet client or reuse Python transaction encodings.
+- Add an explicit network selector for Python Devnet and Polkadot SDK Local/Testnet. Show the selected network and genesis hash before signing or submission.
+- Use maintained, compatible libraries for SCALE metadata, extrinsic construction/signing and transaction fee, nonce and finality handling. Verify behavior against the pinned node, not assumptions about RPC names or encodings.
+- Document Python `kenan1` versus SS58 addresses, key types, derivation paths and signature algorithms. Do not silently change existing account derivation or claim seed phrases generate the same account. Design and test an explicit migration if compatibility is possible; otherwise document the limitation.
+- Exercise a wallet-signed transfer against the actual local node, then verify the finalized transaction and resulting balance. Test RPC outage, delayed finality and retry without duplicate submission.
+- Keep Python as the default until all integration tests pass and rollback is verified. Preserve the existing Python, Rust and Android CI jobs and add a distinct SDK/wallet integration lane.
+
+**Phase 3 completion gate:** wallet transfer and balance read-back succeed on a real local SDK node; wrong nonce/replay and network mismatch are rejected; RPC failure/delayed confirmation are handled honestly; Python remains selectable and unchanged.
+
+## Requested Phase 3 — Kenan test-only Runtime overlay (2026-10-28)
+
+- Feature branch `feat/kenan-runtime-customization-2026-10-27`, code commit [`7a6a3c3e`](https://github.com/hoodmoshla/kenan-ecosystem/commit/7a6a3c3e2bed48e6b39d0a012c52304b7c8aee15), passed [GitHub Actions run 40603492500](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40603492500). Python and Rust core jobs also passed; the prior SDK-node and Android jobs were skipped by the phase-specific workflow conditions.
+- The successful integration log verifies the test-only Kenan chain identity/runtime metadata and the `UNIT`/12 display properties, then reconciles genesis issuance exactly across the four upstream development-only accounts.
+- Against the local loopback node, the test finalized an Alice-to-Bob transfer, checked the nonce increment, and matched the sender's balance delta to the finalized `TransactionFeePaid` event. The run observed `759,838,144` base units of fee; this is an ephemeral development-test result, not an approved fee schedule.
+- The same run confirmed development Sudo rejects Bob and permits Alice only for an inert `System.remark` probe. The overlay inherits the official template's development genesis preset and keys; it does not establish a production authority or governance policy.
+- This is a reproducible, test-only identity/runtime slice, not a custom economic Runtime. No issuance, supply, distribution, production fees, governance, or validator policy was approved or changed. The branch remains unmerged; physical-device testing and the closed exchange phase remain separate gates.
+
+## Phase 4 — Build a closed, test-only Kenan exchange
+
+Build functioning services, not decorative screens. Every screen must be connected to a real test service or clearly marked as unavailable/in development. Do not show fabricated balances, prices, liquidity or successful deposits/withdrawals.
+
+### 4.1 Exchange services and interfaces
+
+Plan explicit modules for market/balance dashboard, markets and pairs, spot trading, order book, trades/prices, user order history/status, asset and available/reserved balance management, deposits/withdrawals, internal ledger, notifications/audit events, account/session security, role-limited administration, and operational/liquidity/error reporting. Separate test data from any future production data.
+
+### 4.2 Spot matching engine
+
+Start with test-only spot `Market` and `Limit` buy/sell orders. Implement price-then-time priority, open/partially filled/filled/cancelled/rejected states, partial fills and cancellation of the remainder, configurable test fees, balance/asset validation, funds reservation before acceptance, release on cancellation/expiry, and unique/idempotent order and trade identifiers. Retries, concurrent submissions and disconnects must not create duplicate fills.
+
+Add tests for order races, insufficient funds, cancellation, partial execution, repeated requests, idempotency and consistency between the book, trades, reservations and ledger.
+
+### 4.3 Double-entry ledger and reconciliation
+
+Use balanced immutable ledger entries with an audit trail; distinguish available and reserved amounts. Make reservation, release and settlement atomic where possible. Never edit a balance without a corresponding ledger entry. Use unique event identifiers, periodic balance/ledger reconciliation and explicit trade settlement. Test concurrency and fault paths for any possibility of creating funds. Exchange database balances are not blockchain balances; document the reconciliation boundary.
+
+### 4.4 Funding and market administration — current state
+
+- No chain deposit, withdrawal, or chain settlement is implemented. Local DEMO grants are not deposits and are never represented as KEN, USD, or chain balances. Any future test-chain deposit needs a separate observer, actual transaction verification, confirmation policy, and approval before crediting.
+- The exchange now has an observation-only boundary (`backend/exchange/chain_deposits.py`) and a test harness that can consume finalized Runtime observations. It pins chain/runtime identity and display asset properties, hashes the signed extrinsic bytes, matches the successful event phase/call/signer/recipient/amount, and requires an explicit AccountId32 beneficiary binding. It only records `pending_settlement_review`; it never credits a trading balance. A continuously running RPC watcher and a settlement/approval flow are still not implemented.
+- The Kenan test Runtime currently advertises `UNIT` with 12 decimals. This is a test display property only; it is not an approved KEN asset or precision. No KEN mapping is inferred or applied, and no balance is converted between chain units and DEMO units.
+- No withdrawal route or withdrawal simulation is enabled. Do not add real custody, treasury keys, leverage, margin, or derivatives. Any later real withdrawal design needs independent security review, multi-party approval, limits, monitoring, and incident response.
+- The only current administrative endpoint is token-protected `/admin/status`; no market/asset/fee mutation endpoint exists. Any future admin action must be role-limited and audited. Define assets and rules before enabling new pairs. Do not fabricate liquidity or random prices.
+
+### 4.5 Security and operation
+
+The local DEMO service now has salted PBKDF2 password hashes, hashed/expiring bearer sessions, ownership checks for account reads and writes, and a trader-only order/cancel permission. Continue to treat this as test-only: add rate limits, account recovery, stronger administrative provisioning, operational secret management, backups with restore tests, health/error/finality-lag monitoring, and concurrency/load/recovery reviews before any real service. No default credentials or committed secrets. Automated tests are not a security audit or legal approval.
+
+**Local Phase 4 gate:** spot order and ledger invariants pass integration, concurrency, idempotency and recovery tests; every user-visible action is backed by the DEMO service or explicitly unavailable; no real-money operation is enabled. Passing this gate does not authorize chain deposits or production trading.
+
+### Phase 4 implementation status (2026-10-28)
+
+- Work remains isolated on `feat/kenan-exchange-ledger-2026-10-27`; no default-branch merge is authorized.
+- The engine uses a durable SQLite order/trade ledger and append-only hash-linked double-entry journals. Each transaction balances by asset; available/reserved user accounts cannot go negative. Startup reconciliation validates journal/audit hashes, funding caps, active reservations and trade settlement.
+- All exchange data uses explicit `DEMO` tags and the only symbols `DEMO_BASE`/`DEMO_QUOTE`. Amounts are integer ledger units and limit prices are rational `price_num/price_den` pairs; neither maps to KEN decimals, USD, approved asset precision, or monetary value.
+- A separate local operator CLI, `python3 -m backend.exchange.demo_funding grant`, is not imported by the HTTP app or Android app. It writes only to `data/demo-exchange.sqlite3`, one grant per user/asset, at most 10,000 raw units per grant and 100,000 total raw units across DEMO assets. Grant IDs are idempotent; successful grants post a clearing-account double-entry and immutable audit event. A raw-unit cap across different demo assets is only an issuance safety bound, not a valuation.
+- Limit/market matching uses price-time priority, integer settlement, partial-fill states, cancellation release and idempotent order/cancel requests. Market buys require explicit quote budget; market remainder does not rest. The HTTP service charges no fee; a fee path is exercised only in test-configured engine tests and is not a selected policy. The visible book is only submitted limit orders; no synthetic prices/liquidity are created.
+- HTTP deposits and withdrawals return unavailable, unknown funding routes are not exposed, and all Exchange routes are loopback-only. The Android app has no funding button; a separate phone cannot access this loopback service. `/admin/status` requires an admin token. Exchange records are never Python-devnet or Polkadot-chain balances.
+- Local verification for this follow-up: `python3 -m unittest discover -s tests -v` — **54/54 passed**; `cargo test --locked --manifest-path rust-core/Cargo.toml` — **2/2 passed**; Android `:app:testDebugUnitTest` — **31 tests, 0 failures, 1 live-node integration test skipped because no RPC URL was supplied**; `:app:lintDebug` — **0 errors, 11 existing warnings**; `:app:assembleDebug` — **passed**. GitHub Actions run [40651914913](https://github.com/hoodmoshla/kenan-ecosystem/actions/runs/40651914913) passed Python/Rust and skipped Kenan Runtime, Polkadot SDK and Android jobs by branch conditions. No phone/emulator or live Polkadot/Runtime test was run for this follow-up; skipped jobs are not passes.
+- This is still a local DEMO service, not a production exchange or security audit. Chain deposits/withdrawals, confirmed chain settlement, identity/session authentication, asset/unit policy, operational backup/restore drill and independent review remain outstanding. No real funds are held.
+
+## Phase 5 — Integrate exchange, SDK chain and wallet
+
+Only after the chain, wallet adapter and exchange test services pass their separate gates:
+
+- Put a defined service interface between exchange services and the SDK node. Read test-chain balances and observe real test transactions.
+- Require configured confirmations before a deposit is credited. Link deposits/withdrawal requests and trade settlement to unique ledger events; reconcile chain and internal balances without conflating them.
+- Test node/service restart, RPC outage, delayed transaction, duplicate request, order cancellation, reservation release and final settlement.
+- Do not call the exchange decentralized merely because it connects to a blockchain; document which records/operations are on-chain and which are controlled by the centralized exchange service.
+
+**Phase 5 completion gate:** end-to-end wallet, node, deposit-observer and ledger tests pass on the actual local/test network, including duplicate prevention and recovery; no real custody or public trading is enabled.
+
+## Phase 6 — Authorized private network, before any launch decision
+
+After local chain and integration gates pass, run a private testnet starting with one internal validator, then multiple independent validator processes/machines as needed. Test finality, restart, backup/restore, configuration changes, runtime upgrade, key rotation, monitoring and incident response. Protect validator keys; never put them in Git, CI logs or APKs. Run the wallet and closed exchange end-to-end on this network.
+
+Before even considering production, require an independent security review, operational and incident-response readiness, approved genesis/tokenomics, legal review appropriate to the intended jurisdictions, and a tested rollback/migration path. Green automated CI alone is not evidence of financial safety. No phase in this plan authorizes mainnet, real funds, public registration or a public exchange listing.
+
+## Delivery practice
+
+- Keep changes small, reviewable and phase-gated; preserve existing working behavior and tests.
+- Run the relevant tests and CI for Python, Rust, Android, SDK and exchange services for each change. Record actual commands and results; distinguish a local check from hosted GitHub CI.
+- Do not push or publish a network, enable production settings, or claim a feature passed without evidence. At each phase boundary, report changes, commit, tests, limitations and the next gate.
+- If a phase is too large, implement and verify its first buildable slice before expanding scope; do not substitute another plan document or UI for running code.

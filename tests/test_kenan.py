@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import threading
+import uuid
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -19,6 +20,7 @@ sys.path.insert(0, ROOT)
 from blockchain.kenan_chain import Chain, UNIT, BASE_FEE, verify_signature  # noqa: E402
 from blockchain.node_server import make_handler as node_handler  # noqa: E402
 from backend.app import make_handler as backend_handler  # noqa: E402
+from backend.exchange.demo_funding import LocalDemoFunder  # noqa: E402
 from backend.exchange.engine import Engine  # noqa: E402
 from backend.modules.features import (  # noqa: E402
     shield_check, intelligence_answer, draft_transfer, Circle,
@@ -60,6 +62,12 @@ class TestWallet(unittest.TestCase):
         bad = dict(tx, amount=999)
         self.assertFalse(verify_signature(bad))
 
+    def test_known_bip39_devnet_vector(self):
+        w = wallet.restore_wallet("abandon " * 23 + "art")
+        tx = wallet.sign_transfer(w, "kenan1" + "a" * 40, 123456789, BASE_FEE, 0)
+        self.assertEqual(w["address"], "kenan1e28c3608979d45d2c7dc74b1c19519e54ce8961c")
+        self.assertEqual(tx["signature"], "83996074af8b16499df9e5c75fce1de46e9495ed50585d5ed26548c949a50ed26f278e5b938df56ed63dd1bb109e00fa5f2504304b8bb18e5de48408a980e40b")
+
 
 class TestChain(unittest.TestCase):
     def setUp(self):
@@ -88,6 +96,8 @@ class TestChain(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], 1, BASE_FEE, 0))
         with self.assertRaises(ValueError):
+            self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], 1, BASE_FEE + 1, 1))
+        with self.assertRaises(ValueError):
             self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], 10 ** 12 * UNIT, BASE_FEE, 1))
 
     def test_security_validation(self):
@@ -101,6 +111,8 @@ class TestChain(unittest.TestCase):
         # malformed input must fail cleanly, never raise KeyError
         self.assertIsNotNone(self.chain.validate({"to": self.bob["address"]}))
         self.assertIsNotNone(self.chain.validate("not-a-dict"))
+        malformed_from = dict(tx, **{"from": ["not", "an", "address"]})
+        self.assertIsNotNone(self.chain.validate(malformed_from))
         # bad recipient + oversized memo rejected
         bad = wallet.sign_transfer(self.alice, "kenan1short", 1, BASE_FEE, 0)
         self.assertIsNotNone(self.chain.validate(bad))
@@ -122,31 +134,123 @@ class TestChain(unittest.TestCase):
         res = self.chain.submit(tx)
         reloaded = Chain(path=os.path.join(self.tmp.name, "chain.json"))
         self.assertEqual(reloaded.balance(self.bob["address"]), 5 * UNIT)
+        self.assertEqual(reloaded.balance(self.alice["address"]), 1000 * UNIT - 5 * UNIT - BASE_FEE)
+        self.assertEqual(reloaded.nonces[self.alice["address"]], 1)
+        self.assertEqual(reloaded.total_supply, self.chain.total_supply)
+        self.assertEqual(reloaded.burned, self.chain.burned)
         self.assertIsNotNone(reloaded.get_tx(res["hash"]))
         self.assertIsNone(reloaded.get_tx("0" * 64))
+        with self.assertRaises(ValueError):
+            reloaded.submit(tx)
+
+    def test_faucet_is_recorded_and_capped_across_restart(self):
+        self.chain.faucet(self.bob["address"], 500 * UNIT)
+        self.assertEqual(self.chain.blocks[-1]["txs"][0]["kind"], "faucet")
+        reloaded = Chain(path=os.path.join(self.tmp.name, "chain.json"))
+        self.assertEqual(reloaded.balance(self.bob["address"]), 500 * UNIT)
+        with self.assertRaises(ValueError):
+            reloaded.faucet(self.bob["address"], 501 * UNIT)
+
+    def test_modified_balance_snapshot_is_rejected(self):
+        path = os.path.join(self.tmp.name, "chain.json")
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        data["balances"][self.alice["address"]] += 1
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+        with self.assertRaisesRegex(ValueError, "snapshot"):
+            Chain(path=path)
+
+    def test_modified_transaction_ledger_is_rejected(self):
+        self.chain.submit(wallet.sign_transfer(self.alice, self.bob["address"], UNIT, BASE_FEE, 0))
+        path = os.path.join(self.tmp.name, "chain.json")
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        data["blocks"][-1]["txs"][0]["amount"] += 1
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+        with self.assertRaisesRegex(ValueError, "transaction hash"):
+            Chain(path=path)
 
 
 class TestExchange(unittest.TestCase):
     def test_limit_match_partial_and_reserved(self):
         e = Engine()
-        e.deposit_demo("seller", "KEN", 10)
-        e.deposit_demo("buyer", "USD-DEMO", 1000)
-        e.place("seller", "sell", "KEN/USD-DEMO", "limit", 10, 10.0)
-        o = e.place("buyer", "buy", "KEN/USD-DEMO", "limit", 4, 10.0)
-        self.assertEqual(o.status, "filled")
-        self.assertEqual(len(e.trades), 1)
-        self.assertAlmostEqual(e.trades[0]["qty"], 4)
-        self.assertEqual(e.balances["seller"]["KEN"]["reserved"], 6)
+        self.addCleanup(e.close)
+        funder = LocalDemoFunder(e.ledger)
+        funder.grant("seller", "DEMO_BASE", 10, "legacy-test-seller-01")
+        funder.grant("buyer", "DEMO_QUOTE", 1000, "legacy-test-buyer-001")
+        e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 10, 10, 1,
+                idempotency_key="legacy-test-ask-001")
+        result = e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 4, 10, 1,
+                         idempotency_key="legacy-test-bid-001")
+        self.assertEqual(result["order"]["status"], "filled")
+        self.assertEqual(len(e.trades_snapshot()), 1)
+        self.assertEqual(e.trades_snapshot()[0]["qty_units"], 4)
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["reserved_units"], 6)
         with self.assertRaises(ValueError):
-            e.place("buyer", "buy", "KEN/USD-DEMO", "limit", 100000, 10.0)
+            e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 100000, 10, 1,
+                    idempotency_key="legacy-insufficient-01")
 
     def test_cancel_releases_reservation(self):
         e = Engine()
-        e.deposit_demo("seller", "KEN", 5)
-        o = e.place("seller", "sell", "KEN/USD-DEMO", "limit", 5, 10.0)
-        e.cancel(o.id, "seller")
-        self.assertEqual(e.balances["seller"]["KEN"]["free"], 5)
-        self.assertEqual(e.balances["seller"]["KEN"]["reserved"], 0)
+        self.addCleanup(e.close)
+        LocalDemoFunder(e.ledger).grant("seller", "DEMO_BASE", 5, "legacy-cancel-fund-01")
+        order = e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 5, 10, 1,
+                        idempotency_key="legacy-cancel-order-01")
+        e.cancel(order["order"]["id"], "seller", "legacy-cancel-key-01")
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["available_units"], 5)
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["reserved_units"], 0)
+
+    def test_invalid_order_fields_and_only_demo_assets_are_accepted(self):
+        e = Engine()
+        self.addCleanup(e.close)
+        LocalDemoFunder(e.ledger).grant("seller", "DEMO_BASE", 5, "legacy-invalid-fund-01")
+        with self.assertRaises(ValueError):
+            e.place("seller", "sideways", "DEMO_BASE/DEMO_QUOTE", "limit", 1, 1, 1,
+                    idempotency_key="invalid-side-0001")
+        with self.assertRaises(ValueError):
+            e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "stop", 1, 1, 1,
+                    idempotency_key="invalid-kind-0001")
+        with self.assertRaises(ValueError):
+            e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", float("nan"), 1, 1,
+                    idempotency_key="invalid-float-0001")
+        with self.assertRaises(ValueError):
+            e.place("seller", "sell", "KEN/USD", "limit", 1, 1, 1,
+                    idempotency_key="invalid-real-pair-01")
+        self.assertEqual(e.orders_snapshot(), [])
+        self.assertEqual(e.balances_snapshot("seller")["DEMO_BASE"]["available_units"], 5)
+
+    def test_limit_buy_price_improvement_releases_surplus(self):
+        e = Engine()
+        self.addCleanup(e.close)
+        funder = LocalDemoFunder(e.ledger)
+        funder.grant("seller", "DEMO_BASE", 5, "improve-seller-fund-01")
+        funder.grant("buyer", "DEMO_QUOTE", 100, "improve-buyer-fund-01")
+        e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 5, 10, 1,
+                idempotency_key="improve-ask-order-01")
+        order = e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 4, 12, 1,
+                        idempotency_key="improve-bid-order-01")
+        self.assertEqual(order["order"]["status"], "filled")
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_BASE"]["available_units"], 4)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["available_units"], 60)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["reserved_units"], 0)
+
+    def test_partial_limit_buy_cancel_returns_all_remaining_reserve(self):
+        e = Engine()
+        self.addCleanup(e.close)
+        funder = LocalDemoFunder(e.ledger)
+        funder.grant("seller", "DEMO_BASE", 2, "partial-seller-fund-01")
+        funder.grant("buyer", "DEMO_QUOTE", 100, "partial-buyer-fund-01")
+        e.place("seller", "sell", "DEMO_BASE/DEMO_QUOTE", "limit", 2, 10, 1,
+                idempotency_key="partial-ask-order-01")
+        order = e.place("buyer", "buy", "DEMO_BASE/DEMO_QUOTE", "limit", 4, 12, 1,
+                        idempotency_key="partial-bid-order-01")
+        self.assertEqual(order["order"]["status"], "partially_filled")
+        self.assertEqual(order["order"]["reserved_units"], 24)
+        e.cancel(order["order"]["id"], "buyer", "partial-cancel-key-01")
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["available_units"], 80)
+        self.assertEqual(e.balances_snapshot("buyer")["DEMO_QUOTE"]["reserved_units"], 0)
 
 
 class TestModules(unittest.TestCase):
@@ -178,8 +282,9 @@ class TestModules(unittest.TestCase):
         self.assertTrue(inv["pay_payload"].startswith("kenan://pay"))
         with self.assertRaises(ValueError):
             receipt_for(inv["invoice_id"], "")
-        self.assertEqual(receipt_for(inv["invoice_id"], "ab" * 32)["status"],
-                         "paid-pending-chain-confirmation")
+        receipt = receipt_for(inv["invoice_id"], "ab" * 32)
+        self.assertEqual(receipt["status"], "pending-verification")
+        self.assertFalse(receipt["verified"])
 
     def test_academy_insights_governance_bridge(self):
         self.assertEqual(academy_account("u")["account_type"], "VIRTUAL-DEMO")
@@ -236,13 +341,56 @@ class TestHttpIntegration(unittest.TestCase):
         self.assertEqual(proxied["balance_ken"], 10)
         self.assertEqual(proxied["source"], "live node RPC")
 
-    def test_backend_demo_order_and_shield(self):
-        post(self.api_url + "/exchange/deposit-demo", {"user": "s", "asset": "KEN", "amount": 5})
-        post(self.api_url + "/exchange/deposit-demo", {"user": "b", "asset": "USD-DEMO", "amount": 500})
-        post(self.api_url + "/exchange/orders", {"user": "s", "side": "sell", "pair": "KEN/USD-DEMO", "kind": "limit", "qty": 5, "price": 10})
-        o = post(self.api_url + "/exchange/orders", {"user": "b", "side": "buy", "pair": "KEN/USD-DEMO", "kind": "limit", "qty": 5, "price": 10})
-        self.assertEqual(o["status"], "filled")
-        self.assertTrue(o["demo_only"])
+    def test_node_rejects_non_object_json_body(self):
+        request = urllib.request.Request(
+            self.node_url + "/tx/submit", data=b"[]",
+            headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(error.exception.code, 400)
+
+    def test_faucet_is_denied_when_loopback_mutations_are_disabled(self):
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), node_handler(self.chain, allow_loopback_mutations=False))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        address = wallet.create_wallet()["address"]
+        before = self.chain.balance(address)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/faucet",
+            data=json.dumps({"address": address}).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(error.exception.code, 403)
+            self.assertEqual(self.chain.balance(address), before)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_backend_exchange_funding_is_disabled_and_shield(self):
+        username = "no-funds-" + uuid.uuid4().hex
+        password = "local integration test password only"
+        request = urllib.request.Request(
+            self.api_url + "/exchange/deposit-demo",
+            data=json.dumps({"user": "no-funds", "asset": "DEMO_BASE", "amount_units": 5}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(error.exception.code, 410)
+        post(self.api_url + "/exchange/register", {"username": username, "password": password})
+        session = post(self.api_url + "/exchange/login", {"username": username, "password": password})["session"]["token"]
+        balance_request = urllib.request.Request(
+            self.api_url + "/exchange/balances/" + username,
+            headers={"Authorization": f"Bearer {session}"},
+        )
+        with urllib.request.urlopen(balance_request, timeout=5) as response:
+            balance = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(balance["environment"], "DEMO")
+        self.assertIs(balance["demo_only"], True)
+        self.assertEqual(balance["balances"], {})
         sh = post(self.api_url + "/shield/check", {"to": "bad", "amount": 1, "fee": 0})
         self.assertEqual(sh["level"], "blocked")
 
