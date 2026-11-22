@@ -27,3 +27,8 @@ No Android phone or emulator was connected in this sandbox; `adb` and a locally 
 There is no approved KEN asset/precision mapping, KEN deposit credit, withdrawal or settlement-approval path. The test Runtime's `UNIT/12` must not be treated as KEN. There is also no continuous production-grade chain watcher, backup/restore drill, independent security audit, release-signing key, or production/legal operations review. No real funds, public trading or custody are enabled.
 
 Prior SDK and wallet results documented in earlier status reports apply only to their earlier branch/commit; the checks above specify what was actually rerun for this follow-up.
+
+## Merge to main (2026-11-23)
+
+- PR #1 merges this branch into `main`. The merge is conflict-free (`main` is an ancestor of this branch) and was verified locally; Python 67/67 and Rust 2/2 were re-run locally, plus a full end-to-end devnet check (node + backend + DEMO exchange).
+- Known CI gap after the merge: the Kenan Runtime job's `if:` condition in `.github/workflows/ci.yml` lists only the two feature branches, so it will not run on `main` pushes. The Polkadot SDK and Android jobs are not gated that way and will run on `main`. Fixing it is a one-line edit to that `if:` (add `|| (github.head_ref || github.ref_name) == 'main'`), but it needs the `workflows` permission — edit the file in the GitHub web UI.
