@@ -54,6 +54,247 @@ jobs:
         working-directory: android-app
         run: ./gradlew --no-daemon :app:assembleDebug --console=plain
 
+      - name: Write emulator smoke script
+        run: |
+          cat > /tmp/smoke-test.sh <<'SMOKEEOF'
+          set +e
+          SMOKE=/tmp/kenan-smoke
+          mkdir -p "$SMOKE"
+          APK="$GITHUB_WORKSPACE/android-app/app/build/outputs/apk/debug/app-debug.apk"
+          SUMMARY="$SMOKE/SUMMARY.md"
+          {
+            echo "# KenanWallet emulator smoke test"
+            echo ""
+            echo "Run: $GITHUB_RUN_ID  Date (UTC): $(date -u +%FT%TZ)"
+            echo ""
+          } > "$SUMMARY"
+          CORE_FAIL=0
+          note_pass() { echo "- PASS: $1" >> "$SUMMARY"; echo "PASS: $1"; }
+          note_fail() { echo "- FAIL: $1" >> "$SUMMARY"; echo "FAIL: $1"; CORE_FAIL=1; }
+          note_info() { echo "- INFO: $1" >> "$SUMMARY"; echo "INFO: $1"; }
+
+          cat > /tmp/ui.py <<'PYEOF'
+          import subprocess, sys, xml.etree.ElementTree as ET, re, os
+          SMOKE = "/tmp/kenan-smoke"
+          TMPDUMP = "/tmp/ui-dump.xml"
+          def adb(*args):
+              return subprocess.run(["adb"] + list(args), capture_output=True, text=True, timeout=120)
+          def dump(path=TMPDUMP):
+              adb("shell", "uiautomator", "dump", "/sdcard/window_dump.xml")
+              subprocess.run(["adb", "pull", "/sdcard/window_dump.xml", path], capture_output=True, timeout=60)
+              return path
+          def nodes(path):
+              return list(ET.parse(path).iter("node"))
+          def center(n):
+              m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds", ""))
+              if not m:
+                  return None
+              x1, y1, x2, y2 = map(int, m.groups())
+              return (x1 + x2) // 2, (y1 + y2) // 2
+          def tap(needle):
+              dump()
+              for n in nodes(TMPDUMP):
+                  hay = (n.get("text") or "") + "\n" + (n.get("content-desc") or "")
+                  if needle in hay:
+                      p = center(n)
+                      if p:
+                          adb("shell", "input", "tap", str(p[0]), str(p[1]))
+                          print("TAPPED " + needle + " @ " + str(p))
+                          return True
+              print("NOTFOUND " + needle, file=sys.stderr)
+              return False
+          def tap_edit(index):
+              dump()
+              edits = [n for n in nodes(TMPDUMP) if n.get("class") == "android.widget.EditText"]
+              if index >= len(edits):
+                  print("NOEDIT " + str(index), file=sys.stderr)
+                  return False
+              p = center(edits[index])
+              if not p:
+                  print("NOEDITBOUNDS " + str(index), file=sys.stderr)
+                  return False
+              adb("shell", "input", "tap", str(p[0]), str(p[1]))
+              print("TAPPED_EDIT " + str(index))
+              return True
+          def has(needle):
+              dump()
+              for n in nodes(TMPDUMP):
+                  hay = (n.get("text") or "") + "\n" + (n.get("content-desc") or "")
+                  if needle in hay:
+                      print("YES " + needle)
+                      return True
+              print("NO " + needle)
+              return False
+          def shot(name):
+              with open(os.path.join(SMOKE, name + ".png"), "wb") as f:
+                  subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=f, timeout=120)
+              print("SHOT " + name)
+          def save_dump(name):
+              dump(os.path.join(SMOKE, name + ".xml"))
+              print("DUMP " + name)
+          def find_address():
+              dump()
+              for n in nodes(TMPDUMP):
+                  t = n.get("text") or ""
+                  if re.fullmatch(r"kenan1[0-9a-f]+", t):
+                      print("ADDRESS " + t)
+                      return t
+              print("NOADDRESS", file=sys.stderr)
+              return None
+          def find_verified():
+              dump()
+              for n in nodes(TMPDUMP):
+                  t = n.get("text") or ""
+                  if "Verified on devnet" in t:
+                      print("VERIFIED " + t)
+                      return t
+              print("NOVERIFIED", file=sys.stderr)
+              return None
+          if __name__ == "__main__":
+              cmd = sys.argv[1]
+              if cmd == "tap":
+                  sys.exit(0 if tap(sys.argv[2]) else 1)
+              elif cmd == "tap_edit":
+                  sys.exit(0 if tap_edit(int(sys.argv[2])) else 1)
+              elif cmd == "has":
+                  sys.exit(0 if has(sys.argv[2]) else 1)
+              elif cmd == "shot":
+                  shot(sys.argv[2])
+              elif cmd == "dump":
+                  save_dump(sys.argv[2])
+              elif cmd == "address":
+                  sys.exit(0 if find_address() else 1)
+              elif cmd == "verified":
+                  sys.exit(0 if find_verified() else 1)
+          PYEOF
+
+          # 0. preconditions: devnet node must still be up
+          if curl -fsS http://127.0.0.1:8545/health >/dev/null 2>&1; then note_pass "devnet node reachable on 127.0.0.1:8545"; else note_fail "devnet node NOT reachable"; fi
+          adb wait-for-device
+
+          # 1. install
+          if adb install -r "$APK" > "$SMOKE/install.log" 2>&1; then note_pass "APK installed"; else note_fail "APK install failed (see install.log)"; fi
+          adb shell dumpsys package com.kenan.wallet | grep -E "versionName|versionCode" > "$SMOKE/version.txt" || true
+
+          # 2. launch and check setup screen
+          adb shell am start -n com.kenan.wallet/.MainActivity
+          sleep 8
+          python3 /tmp/ui.py shot 01-launch
+          python3 /tmp/ui.py dump 01-launch
+          if python3 /tmp/ui.py has "Create new wallet"; then note_pass "setup screen shown (Create new wallet)"; else note_fail "setup screen NOT shown"; fi
+
+          # 3. create wallet. The dialog shows a fresh TEST-ONLY phrase: tap through
+          # without saving any dump or screenshot at this step, then delete the temp dump.
+          python3 /tmp/ui.py tap "Create new wallet"
+          sleep 3
+          python3 /tmp/ui.py tap "I saved the recovery phrase securely"
+          sleep 1
+          python3 /tmp/ui.py tap "Save encrypted wallet"
+          rm -f /tmp/ui-dump.xml
+          adb shell rm -f /sdcard/window_dump.xml
+          HOME_OK=0
+          for i in $(seq 1 20); do
+            if python3 /tmp/ui.py has "Your wallet"; then HOME_OK=1; break; fi
+            sleep 3
+          done
+          if [ "$HOME_OK" = 1 ]; then note_pass "wallet created, Home dashboard shown"; else note_fail "Home dashboard did NOT appear after wallet creation"; fi
+          sleep 2
+          python3 /tmp/ui.py shot 03-home
+          python3 /tmp/ui.py dump 03-home
+          python3 /tmp/ui.py has "On-chain balance" && note_info "balance card present" || note_info "balance card NOT seen"
+
+          # 4. read full address from Assets tab and fund it via the faucet
+          python3 /tmp/ui.py tap "Assets"
+          sleep 3
+          python3 /tmp/ui.py shot 04-assets
+          python3 /tmp/ui.py dump 04-assets
+          ADDR=$(python3 /tmp/ui.py address || true)
+          if [ -n "$ADDR" ]; then
+            echo "$ADDR" > "$SMOKE/wallet-address.txt"
+            note_pass "full address read from Assets tab"
+            curl -fsS -X POST http://127.0.0.1:8545/faucet -H 'Content-Type: application/json' -d "{\"address\": \"$ADDR\"}" > "$SMOKE/faucet-response.json" || note_fail "faucet call failed"
+            BAL=$(curl -fsS "http://127.0.0.1:8545/accounts/$ADDR" | python3 -c "import json,sys; print(json.load(sys.stdin).get('balance_base'))")
+            echo "balance_base=$BAL" >> "$SMOKE/faucet-response.json"
+            if [ "$BAL" = "100000000000" ]; then note_pass "faucet funded 100 KEN (balance_base=$BAL)"; else note_fail "unexpected balance after faucet: $BAL"; fi
+          else
+            note_fail "could not read full address from Assets tab"
+          fi
+
+          # 5. relaunch and check the funded balance shows in the app
+          adb shell am force-stop com.kenan.wallet
+          adb shell am start -n com.kenan.wallet/.MainActivity
+          sleep 8
+          python3 /tmp/ui.py shot 05-home-funded
+          python3 /tmp/ui.py dump 05-home-funded
+          python3 /tmp/ui.py tap "Assets"
+          sleep 3
+          python3 /tmp/ui.py dump 05-assets-funded
+          if python3 /tmp/ui.py has "100 KEN"; then note_pass "app shows funded balance 100 KEN"; else note_fail "app does NOT show 100 KEN after funding"; fi
+
+          # 6. send 25 KEN to a fresh recipient address (generated locally, address only)
+          python3 - <<'PYEOF2'
+          import importlib.util, sys
+          sys.path.insert(0, ".")
+          spec = importlib.util.spec_from_file_location("kenan_wallet", "wallet-core/wallet.py")
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          w = mod.create_wallet()
+          open("/tmp/recipient.txt", "w").write(w["address"])
+          print("recipient address ready")
+          PYEOF2
+          RECIPIENT=$(cat /tmp/recipient.txt)
+          python3 /tmp/ui.py tap "Home"
+          sleep 2
+          python3 /tmp/ui.py tap "Send"
+          sleep 2
+          python3 /tmp/ui.py tap_edit 0
+          adb shell input text "$RECIPIENT"
+          python3 /tmp/ui.py tap_edit 1
+          adb shell input text "25"
+          python3 /tmp/ui.py tap "Review transfer"
+          sleep 3
+          python3 /tmp/ui.py shot 06-send-review
+          python3 /tmp/ui.py dump 06-send-review
+          if python3 /tmp/ui.py has "Review before signing"; then note_pass "transfer review dialog shown"; else note_fail "transfer review dialog NOT shown"; fi
+          python3 /tmp/ui.py tap "Sign and send"
+          SEND_OK=0
+          for i in $(seq 1 20); do
+            if python3 /tmp/ui.py has "Verified on devnet"; then SEND_OK=1; break; fi
+            sleep 3
+          done
+          if [ "$SEND_OK" = 1 ]; then note_pass "transfer confirmed in app (Verified on devnet)"; else note_fail "transfer NOT confirmed in app"; fi
+          python3 /tmp/ui.py shot 07-send-confirmed
+          python3 /tmp/ui.py dump 07-send-confirmed
+          VERIFIED=$(python3 /tmp/ui.py verified || true)
+          HASH=$(echo "$VERIFIED" | grep -oE '[0-9a-f]{64}' | head -1)
+          if [ -n "$HASH" ]; then
+            echo "$HASH" > "$SMOKE/tx-hash.txt"
+            if curl -fsS "http://127.0.0.1:8545/tx/$HASH" > "$SMOKE/tx-verify.json"; then note_pass "node confirms tx $HASH"; else note_fail "node lookup for tx failed"; fi
+            curl -fsS "http://127.0.0.1:8545/accounts/$ADDR" | python3 -c "import json,sys; print('balance_base_after_send=', json.load(sys.stdin).get('balance_base'))" >> "$SMOKE/tx-verify.json" || true
+          else
+            note_info "no tx hash extracted from confirmation text"
+          fi
+
+          # 7. Markets tab (observational only)
+          python3 /tmp/ui.py tap "Markets"
+          sleep 3
+          python3 /tmp/ui.py shot 08-markets
+          python3 /tmp/ui.py dump 08-markets
+          note_info "Markets tab captured (see 08-markets)"
+
+          # 8. logcat crash check
+          adb logcat -d > "$SMOKE/logcat.txt" 2>/dev/null || true
+          grep -E "FATAL|AndroidRuntime" "$SMOKE/logcat.txt" | grep "com.kenan.wallet" > "$SMOKE/crashes.txt" || true
+          if [ -s "$SMOKE/crashes.txt" ]; then note_fail "crash entries in logcat (see crashes.txt)"; else note_pass "no crash entries for com.kenan.wallet in logcat"; fi
+
+          echo "" >> "$SUMMARY"
+          if [ "$CORE_FAIL" = 0 ]; then echo "OVERALL: PASS" >> "$SUMMARY"; else echo "OVERALL: FAIL" >> "$SUMMARY"; fi
+          cat "$SUMMARY"
+          exit $CORE_FAIL
+          SMOKEEOF
+          chmod +x /tmp/smoke-test.sh
+          bash -n /tmp/smoke-test.sh && echo "smoke script syntax OK"
+
       - name: Emulator smoke test
         uses: reactivecircus/android-emulator-runner@v2
         env:
@@ -70,240 +311,7 @@ jobs:
           emulator-boot-timeout: 1500
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
-          script: |
-            set +e
-            SMOKE=/tmp/kenan-smoke
-            mkdir -p "$SMOKE"
-            APK="$GITHUB_WORKSPACE/android-app/app/build/outputs/apk/debug/app-debug.apk"
-            SUMMARY="$SMOKE/SUMMARY.md"
-            {
-              echo "# KenanWallet emulator smoke test"
-              echo ""
-              echo "Run: $GITHUB_RUN_ID  Date (UTC): $(date -u +%FT%TZ)"
-              echo ""
-            } > "$SUMMARY"
-            CORE_FAIL=0
-            note_pass() { echo "- PASS: $1" >> "$SUMMARY"; echo "PASS: $1"; }
-            note_fail() { echo "- FAIL: $1" >> "$SUMMARY"; echo "FAIL: $1"; CORE_FAIL=1; }
-            note_info() { echo "- INFO: $1" >> "$SUMMARY"; echo "INFO: $1"; }
-
-            cat > /tmp/ui.py <<'PYEOF'
-            import subprocess, sys, xml.etree.ElementTree as ET, re, os
-            SMOKE = "/tmp/kenan-smoke"
-            TMPDUMP = "/tmp/ui-dump.xml"
-            def adb(*args):
-                return subprocess.run(["adb"] + list(args), capture_output=True, text=True, timeout=120)
-            def dump(path=TMPDUMP):
-                adb("shell", "uiautomator", "dump", "/sdcard/window_dump.xml")
-                subprocess.run(["adb", "pull", "/sdcard/window_dump.xml", path], capture_output=True, timeout=60)
-                return path
-            def nodes(path):
-                return list(ET.parse(path).iter("node"))
-            def center(n):
-                m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds", ""))
-                if not m:
-                    return None
-                x1, y1, x2, y2 = map(int, m.groups())
-                return (x1 + x2) // 2, (y1 + y2) // 2
-            def tap(needle):
-                dump()
-                for n in nodes(TMPDUMP):
-                    hay = (n.get("text") or "") + "\n" + (n.get("content-desc") or "")
-                    if needle in hay:
-                        p = center(n)
-                        if p:
-                            adb("shell", "input", "tap", str(p[0]), str(p[1]))
-                            print("TAPPED " + needle + " @ " + str(p))
-                            return True
-                print("NOTFOUND " + needle)
-                return False
-            def tap_edit(index):
-                dump()
-                edits = [n for n in nodes(TMPDUMP) if n.get("class") == "android.widget.EditText"]
-                if index >= len(edits):
-                    print("NOEDIT " + str(index))
-                    return False
-                p = center(edits[index])
-                if not p:
-                    print("NOEDITBOUNDS " + str(index))
-                    return False
-                adb("shell", "input", "tap", str(p[0]), str(p[1]))
-                print("TAPPED_EDIT " + str(index))
-                return True
-            def has(needle):
-                dump()
-                for n in nodes(TMPDUMP):
-                    hay = (n.get("text") or "") + "\n" + (n.get("content-desc") or "")
-                    if needle in hay:
-                        print("YES " + needle)
-                        return True
-                print("NO " + needle)
-                return False
-            def shot(name):
-                with open(os.path.join(SMOKE, name + ".png"), "wb") as f:
-                    subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=f, timeout=120)
-                print("SHOT " + name)
-            def save_dump(name):
-                dump(os.path.join(SMOKE, name + ".xml"))
-                print("DUMP " + name)
-            def find_address():
-                dump()
-                for n in nodes(TMPDUMP):
-                    t = n.get("text") or ""
-                    if re.fullmatch(r"kenan1[0-9a-f]+", t):
-                        print("ADDRESS " + t)
-                        return t
-                print("NOADDRESS")
-                return None
-            def find_verified():
-                dump()
-                for n in nodes(TMPDUMP):
-                    t = n.get("text") or ""
-                    if "Verified on devnet" in t:
-                        print("VERIFIED " + t)
-                        return t
-                print("NOVERIFIED")
-                return None
-            if __name__ == "__main__":
-                cmd = sys.argv[1]
-                if cmd == "tap":
-                    sys.exit(0 if tap(sys.argv[2]) else 1)
-                elif cmd == "tap_edit":
-                    sys.exit(0 if tap_edit(int(sys.argv[2])) else 1)
-                elif cmd == "has":
-                    sys.exit(0 if has(sys.argv[2]) else 1)
-                elif cmd == "shot":
-                    shot(sys.argv[2])
-                elif cmd == "dump":
-                    save_dump(sys.argv[2])
-                elif cmd == "address":
-                    sys.exit(0 if find_address() else 1)
-                elif cmd == "verified":
-                    sys.exit(0 if find_verified() else 1)
-            PYEOF
-
-            # 0. preconditions: devnet node must still be up
-            if curl -fsS http://127.0.0.1:8545/health >/dev/null 2>&1; then note_pass "devnet node reachable on 127.0.0.1:8545"; else note_fail "devnet node NOT reachable"; fi
-            adb wait-for-device
-
-            # 1. install
-            if adb install -r "$APK" > "$SMOKE/install.log" 2>&1; then note_pass "APK installed"; else note_fail "APK install failed (see install.log)"; fi
-            adb shell dumpsys package com.kenan.wallet | grep -E "versionName|versionCode" > "$SMOKE/version.txt" || true
-
-            # 2. launch and check setup screen
-            adb shell am start -n com.kenan.wallet/.MainActivity
-            sleep 8
-            python3 /tmp/ui.py shot 01-launch
-            python3 /tmp/ui.py dump 01-launch
-            if python3 /tmp/ui.py has "Create new wallet"; then note_pass "setup screen shown (Create new wallet)"; else note_fail "setup screen NOT shown"; fi
-
-            # 3. create wallet. The dialog shows a fresh TEST-ONLY phrase: tap through
-            # without saving any dump or screenshot at this step, then delete the temp dump.
-            python3 /tmp/ui.py tap "Create new wallet"
-            sleep 3
-            python3 /tmp/ui.py tap "I saved the recovery phrase securely"
-            sleep 1
-            python3 /tmp/ui.py tap "Save encrypted wallet"
-            rm -f /tmp/ui-dump.xml /sdcard/window_dump.xml
-            HOME_OK=0
-            for i in $(seq 1 20); do
-              if python3 /tmp/ui.py has "Your wallet"; then HOME_OK=1; break; fi
-              sleep 3
-            done
-            if [ "$HOME_OK" = 1 ]; then note_pass "wallet created, Home dashboard shown"; else note_fail "Home dashboard did NOT appear after wallet creation"; fi
-            sleep 2
-            python3 /tmp/ui.py shot 03-home
-            python3 /tmp/ui.py dump 03-home
-            python3 /tmp/ui.py has "On-chain balance" && note_info "balance card present" || note_info "balance card NOT seen"
-
-            # 4. read full address from Assets tab and fund it via the faucet
-            python3 /tmp/ui.py tap "Assets"
-            sleep 3
-            python3 /tmp/ui.py shot 04-assets
-            python3 /tmp/ui.py dump 04-assets
-            ADDR=$(python3 /tmp/ui.py address || true)
-            if [ -n "$ADDR" ]; then
-              echo "$ADDR" > "$SMOKE/wallet-address.txt"
-              note_pass "full address read from Assets tab"
-              curl -fsS -X POST http://127.0.0.1:8545/faucet -H 'Content-Type: application/json' -d "{\"address\": \"$ADDR\"}" > "$SMOKE/faucet-response.json" || note_fail "faucet call failed"
-              BAL=$(curl -fsS "http://127.0.0.1:8545/accounts/$ADDR" | python3 -c "import json,sys; print(json.load(sys.stdin).get('balance_base'))")
-              echo "balance_base=$BAL" >> "$SMOKE/faucet-response.json"
-              if [ "$BAL" = "100000000000" ]; then note_pass "faucet funded 100 KEN (balance_base=$BAL)"; else note_fail "unexpected balance after faucet: $BAL"; fi
-            else
-              note_fail "could not read full address from Assets tab"
-            fi
-
-            # 5. relaunch and check the funded balance shows in the app
-            adb shell am force-stop com.kenan.wallet
-            adb shell am start -n com.kenan.wallet/.MainActivity
-            sleep 8
-            python3 /tmp/ui.py shot 05-home-funded
-            python3 /tmp/ui.py dump 05-home-funded
-            python3 /tmp/ui.py tap "Assets"
-            sleep 3
-            python3 /tmp/ui.py dump 05-assets-funded
-            if python3 /tmp/ui.py has "100 KEN"; then note_pass "app shows funded balance 100 KEN"; else note_fail "app does NOT show 100 KEN after funding"; fi
-
-            # 6. send 25 KEN to a fresh recipient address (generated locally, address only)
-            python3 - <<'PYEOF2'
-            import importlib.util, sys
-            sys.path.insert(0, ".")
-            spec = importlib.util.spec_from_file_location("kenan_wallet", "wallet-core/wallet.py")
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            w = mod.create_wallet()
-            open("/tmp/recipient.txt", "w").write(w["address"])
-            print("recipient address ready")
-            PYEOF2
-            RECIPIENT=$(cat /tmp/recipient.txt)
-            python3 /tmp/ui.py tap "Home"
-            sleep 2
-            python3 /tmp/ui.py tap "Send"
-            sleep 2
-            python3 /tmp/ui.py tap_edit 0
-            adb shell input text "$RECIPIENT"
-            python3 /tmp/ui.py tap_edit 1
-            adb shell input text "25"
-            python3 /tmp/ui.py tap "Review transfer"
-            sleep 3
-            python3 /tmp/ui.py shot 06-send-review
-            python3 /tmp/ui.py dump 06-send-review
-            if python3 /tmp/ui.py has "Review before signing"; then note_pass "transfer review dialog shown"; else note_fail "transfer review dialog NOT shown"; fi
-            python3 /tmp/ui.py tap "Sign and send"
-            SEND_OK=0
-            for i in $(seq 1 20); do
-              if python3 /tmp/ui.py has "Verified on devnet"; then SEND_OK=1; break; fi
-              sleep 3
-            done
-            if [ "$SEND_OK" = 1 ]; then note_pass "transfer confirmed in app (Verified on devnet)"; else note_fail "transfer NOT confirmed in app"; fi
-            python3 /tmp/ui.py shot 07-send-confirmed
-            python3 /tmp/ui.py dump 07-send-confirmed
-            VERIFIED=$(python3 /tmp/ui.py verified || true)
-            HASH=$(echo "$VERIFIED" | grep -oE '[0-9a-f]{64}' | head -1)
-            if [ -n "$HASH" ]; then
-              echo "$HASH" > "$SMOKE/tx-hash.txt"
-              if curl -fsS "http://127.0.0.1:8545/tx/$HASH" > "$SMOKE/tx-verify.json"; then note_pass "node confirms tx $HASH"; else note_fail "node lookup for tx failed"; fi
-              curl -fsS "http://127.0.0.1:8545/accounts/$ADDR" | python3 -c "import json,sys; print('balance_base_after_send=', json.load(sys.stdin).get('balance_base'))" >> "$SMOKE/tx-verify.json" || true
-            else
-              note_info "no tx hash extracted from confirmation text"
-            fi
-
-            # 7. Markets tab (observational only)
-            python3 /tmp/ui.py tap "Markets"
-            sleep 3
-            python3 /tmp/ui.py shot 08-markets
-            python3 /tmp/ui.py dump 08-markets
-            note_info "Markets tab captured (see 08-markets)"
-
-            # 8. logcat crash check
-            adb logcat -d > "$SMOKE/logcat.txt" 2>/dev/null || true
-            grep -E "FATAL|AndroidRuntime" "$SMOKE/logcat.txt" | grep "com.kenan.wallet" > "$SMOKE/crashes.txt" || true
-            if [ -s "$SMOKE/crashes.txt" ]; then note_fail "crash entries in logcat (see crashes.txt)"; else note_pass "no crash entries for com.kenan.wallet in logcat"; fi
-
-            echo "" >> "$SUMMARY"
-            if [ "$CORE_FAIL" = 0 ]; then echo "OVERALL: PASS" >> "$SUMMARY"; else echo "OVERALL: FAIL" >> "$SUMMARY"; fi
-            cat "$SUMMARY"
-            exit $CORE_FAIL
+          script: bash /tmp/smoke-test.sh
 
       - name: Upload smoke evidence
         if: always()
