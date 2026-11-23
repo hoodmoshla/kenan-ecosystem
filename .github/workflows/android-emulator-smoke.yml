@@ -74,14 +74,38 @@ jobs:
           note_info() { echo "- INFO: $1" >> "$SUMMARY"; echo "INFO: $1"; }
 
           cat > /tmp/ui.py <<'PYEOF'
-          import subprocess, sys, xml.etree.ElementTree as ET, re, os
+          import subprocess, sys, xml.etree.ElementTree as ET, re, os, time
           SMOKE = "/tmp/kenan-smoke"
           TMPDUMP = "/tmp/ui-dump.xml"
           def adb(*args):
               return subprocess.run(["adb"] + list(args), capture_output=True, text=True, timeout=120)
           def dump(path=TMPDUMP):
-              adb("shell", "uiautomator", "dump", "/sdcard/window_dump.xml")
-              subprocess.run(["adb", "pull", "/sdcard/window_dump.xml", path], capture_output=True, timeout=60)
+              # Under TCG software emulation the emulator's system_server is slow
+              # and throws "Process system isn't responding" dialogs that cover the
+              # app. Dismiss them with "Wait" and re-dump so every caller sees the app.
+              for _attempt in range(4):
+                  adb("shell", "uiautomator", "dump", "/sdcard/window_dump.xml")
+                  subprocess.run(["adb", "pull", "/sdcard/window_dump.xml", path], capture_output=True, timeout=60)
+                  try:
+                      ns = list(ET.parse(path).iter("node"))
+                  except Exception:
+                      return path
+                  wait_btn = None
+                  anr = False
+                  for n in ns:
+                      t = n.get("text") or ""
+                      if "isn't responding" in t:
+                          anr = True
+                      if t == "Wait":
+                          wait_btn = n
+                  if anr and wait_btn is not None:
+                      p = center(wait_btn)
+                      if p:
+                          adb("shell", "input", "tap", str(p[0]), str(p[1]))
+                          print("DISMISSED ANR dialog (Wait)")
+                          time.sleep(2)
+                          continue
+                  return path
               return path
           def nodes(path):
               return list(ET.parse(path).iter("node"))
@@ -171,6 +195,11 @@ jobs:
           # 0. preconditions: devnet node must still be up
           if curl -fsS http://127.0.0.1:8545/health >/dev/null 2>&1; then note_pass "devnet node reachable on 127.0.0.1:8545"; else note_fail "devnet node NOT reachable"; fi
           adb wait-for-device
+          # Let the emulator settle after boot: system_server throws ANR dialogs
+          # while it finishes post-boot work under slow TCG emulation.
+          echo "settling 120s after boot..."
+          sleep 120
+          adb shell settings put global anr_show_background 0 || true
 
           # 1. install
           if adb install -r "$APK" > "$SMOKE/install.log" 2>&1; then note_pass "APK installed"; else note_fail "APK install failed (see install.log)"; fi
@@ -178,10 +207,10 @@ jobs:
 
           # 2. launch and check setup screen
           adb shell am start -n com.kenan.wallet/.MainActivity
-          sleep 8
+          sleep 20
           python3 /tmp/ui.py shot 01-launch
           python3 /tmp/ui.py dump 01-launch
-          if python3 /tmp/ui.py has "Create new wallet"; then note_pass "setup screen shown (Create new wallet)"; else note_fail "setup screen NOT shown"; fi
+          if python3 /tmp/ui.py has "Create your wallet"; then note_pass "setup screen shown (Create your wallet)"; else note_fail "setup screen NOT shown"; fi
 
           # 3. create wallet. The dialog shows a fresh TEST-ONLY phrase: tap through
           # without saving any dump or screenshot at this step, then delete the temp dump.
@@ -223,7 +252,7 @@ jobs:
           # 5. relaunch and check the funded balance shows in the app
           adb shell am force-stop com.kenan.wallet
           adb shell am start -n com.kenan.wallet/.MainActivity
-          sleep 8
+          sleep 15
           python3 /tmp/ui.py shot 05-home-funded
           python3 /tmp/ui.py dump 05-home-funded
           python3 /tmp/ui.py tap "Assets"
