@@ -10,7 +10,7 @@ jobs:
   emulator-smoke:
     name: Emulator smoke test (Python devnet)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -56,11 +56,18 @@ jobs:
 
       - name: Emulator smoke test
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          # The GitHub Linux runner has no KVM here, so the emulator refuses
+          # software CPU emulation unless this flag forces TCG mode.
+          ANDROID_I_WANT_MY_TCG: "yes"
         with:
           api-level: 34
           target: default
           arch: x86_64
           profile: pixel_6
+          cores: 4
+          ram-size: 4096M
+          emulator-boot-timeout: 1500
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
           script: |
