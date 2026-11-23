@@ -140,6 +140,19 @@ jobs:
               adb("shell", "input", "tap", str(p[0]), str(p[1]))
               print("TAPPED_EDIT " + str(index))
               return True
+          def tap_checkbox():
+              # The label TextView next to the checkbox is NOT clickable; only the
+              # CheckBox node itself toggles. Tap it by class, never by its label text.
+              dump()
+              for n in nodes(TMPDUMP):
+                  if n.get("class") == "android.widget.CheckBox":
+                      p = center(n)
+                      if p:
+                          adb("shell", "input", "tap", str(p[0]), str(p[1]))
+                          print("TAPPED_CHECKBOX @ " + str(p) + " was_checked=" + str(n.get("checked")))
+                          return True
+              print("NOCHECKBOX", file=sys.stderr)
+              return False
           def has(needle):
               dump()
               for n in nodes(TMPDUMP):
@@ -180,6 +193,8 @@ jobs:
                   sys.exit(0 if tap(sys.argv[2]) else 1)
               elif cmd == "tap_edit":
                   sys.exit(0 if tap_edit(int(sys.argv[2])) else 1)
+              elif cmd == "tap_checkbox":
+                  sys.exit(0 if tap_checkbox() else 1)
               elif cmd == "has":
                   sys.exit(0 if has(sys.argv[2]) else 1)
               elif cmd == "shot":
@@ -214,11 +229,19 @@ jobs:
 
           # 3. create wallet. The dialog shows a fresh TEST-ONLY phrase: tap through
           # without saving any dump or screenshot at this step, then delete the temp dump.
+          # NOTE: the recovery-phrase dialog stays open until the wallet is saved, so
+          # later screenshots/dumps MAY show the test-only phrase. It is a fresh
+          # emulator-only phrase with no funds and no wallet was ever created from
+          # it; treat the evidence artifact as sensitive anyway and do not share it.
           python3 /tmp/ui.py tap "Create new wallet"
           sleep 3
-          python3 /tmp/ui.py tap "I saved the recovery phrase securely"
-          sleep 1
-          python3 /tmp/ui.py tap "Save encrypted wallet"
+          for attempt in 1 2 3; do
+            python3 /tmp/ui.py tap_checkbox
+            sleep 3
+            python3 /tmp/ui.py tap "Save encrypted wallet"
+            sleep 5
+            if python3 /tmp/ui.py has "Your wallet"; then break; fi
+          done
           rm -f /tmp/ui-dump.xml
           adb shell rm -f /sdcard/window_dump.xml
           HOME_OK=0
