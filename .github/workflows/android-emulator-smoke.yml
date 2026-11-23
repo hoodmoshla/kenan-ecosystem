@@ -10,7 +10,7 @@ jobs:
   emulator-smoke:
     name: Emulator smoke test (Python devnet)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -83,7 +83,9 @@ jobs:
               # Under TCG software emulation the emulator's system_server is slow
               # and throws "Process system isn't responding" dialogs that cover the
               # app. Dismiss them with "Wait" and re-dump so every caller sees the app.
-              for _attempt in range(4):
+              # NOTE: DISMISSED messages go to stderr so they never pollute stdout
+              # captured by the script (e.g. the wallet address).
+              for _attempt in range(6):
                   adb("shell", "uiautomator", "dump", "/sdcard/window_dump.xml")
                   subprocess.run(["adb", "pull", "/sdcard/window_dump.xml", path], capture_output=True, timeout=60)
                   try:
@@ -102,8 +104,8 @@ jobs:
                       p = center(wait_btn)
                       if p:
                           adb("shell", "input", "tap", str(p[0]), str(p[1]))
-                          print("DISMISSED ANR dialog (Wait)")
-                          time.sleep(2)
+                          print("DISMISSED ANR dialog (Wait)", file=sys.stderr)
+                          time.sleep(3)
                           continue
                   return path
               return path
@@ -174,7 +176,7 @@ jobs:
               for n in nodes(TMPDUMP):
                   t = n.get("text") or ""
                   if re.fullmatch(r"kenan1[0-9a-f]+", t):
-                      print("ADDRESS " + t)
+                      print(t)
                       return t
               print("NOADDRESS", file=sys.stderr)
               return None
@@ -250,6 +252,13 @@ jobs:
             sleep 3
           done
           if [ "$HOME_OK" = 1 ]; then note_pass "wallet created, Home dashboard shown"; else note_fail "Home dashboard did NOT appear after wallet creation"; fi
+          if [ "$HOME_OK" = 1 ]; then
+            # The app fetches the balance over HTTP right after wallet creation;
+            # under TCG that is slow, so give it time to drop the "Disconnected" badge.
+            for i in $(seq 1 6); do
+              if python3 /tmp/ui.py has "Disconnected"; then sleep 10; else note_pass "app connected (Disconnected badge gone)"; break; fi
+            done
+          fi
           sleep 2
           python3 /tmp/ui.py shot 03-home
           python3 /tmp/ui.py dump 03-home
@@ -261,7 +270,7 @@ jobs:
           python3 /tmp/ui.py shot 04-assets
           python3 /tmp/ui.py dump 04-assets
           ADDR=$(python3 /tmp/ui.py address || true)
-          if [ -n "$ADDR" ]; then
+          if echo "$ADDR" | grep -qE '^kenan1[0-9a-f]+$'; then
             echo "$ADDR" > "$SMOKE/wallet-address.txt"
             note_pass "full address read from Assets tab"
             curl -fsS -X POST http://127.0.0.1:8545/faucet -H 'Content-Type: application/json' -d "{\"address\": \"$ADDR\"}" > "$SMOKE/faucet-response.json" || note_fail "faucet call failed"
@@ -269,7 +278,7 @@ jobs:
             echo "balance_base=$BAL" >> "$SMOKE/faucet-response.json"
             if [ "$BAL" = "100000000000" ]; then note_pass "faucet funded 100 KEN (balance_base=$BAL)"; else note_fail "unexpected balance after faucet: $BAL"; fi
           else
-            note_fail "could not read full address from Assets tab"
+            note_fail "could not read full address from Assets tab (got: $(echo "$ADDR" | head -c 80))"
           fi
 
           # 5. relaunch and check the funded balance shows in the app
@@ -310,7 +319,7 @@ jobs:
           if python3 /tmp/ui.py has "Review before signing"; then note_pass "transfer review dialog shown"; else note_fail "transfer review dialog NOT shown"; fi
           python3 /tmp/ui.py tap "Sign and send"
           SEND_OK=0
-          for i in $(seq 1 20); do
+          for i in $(seq 1 12); do
             if python3 /tmp/ui.py has "Verified on devnet"; then SEND_OK=1; break; fi
             sleep 3
           done
